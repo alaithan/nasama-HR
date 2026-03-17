@@ -9,6 +9,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -3261,46 +3263,27 @@ function TopBar({page,onToggleSidebar,counts,onSync,syncStatus,syncInfo}) {
 
 /* ═══════════════════════════════════════════════════════
    FIREBASE SYNC ENGINE — Nasama-Book Firestore
-   Project: nasama-book  |  Read-only  |  brokers + deals
+   Project: nasama-book  |  SDK v10 compat  |  Read-only
 ═══════════════════════════════════════════════════════ */
-const FB_BASE = 'https://firestore.googleapis.com/v1/projects/nasama-book/databases/(default)/documents';
 
-/* Parse a Firestore REST value field into a plain JS value */
-function fbVal(v) {
-  if(!v) return '';
-  if(v.stringValue !== undefined) return v.stringValue;
-  if(v.integerValue !== undefined) return +v.integerValue;
-  if(v.doubleValue !== undefined) return +v.doubleValue;
-  if(v.booleanValue !== undefined) return v.booleanValue;
-  if(v.nullValue !== undefined) return null;
-  if(v.arrayValue) return (v.arrayValue.values||[]).map(fbVal);
-  if(v.mapValue) {
-    const out={};
-    Object.entries(v.mapValue.fields||{}).forEach(([k,val])=>{out[k]=fbVal(val);});
-    return out;
+/* Initialize Firebase app — safe to call multiple times */
+function getFirestore() {
+  if(!window.firebase) throw new Error('Firebase SDK not loaded yet');
+  if(!firebase.apps.length) {
+    firebase.initializeApp({
+      apiKey: 'AIzaSyBLUuq62wSZu9BX0UzGDWDmkDgcGiU4ud0',
+      authDomain: 'nasama-book.firebaseapp.com',
+      projectId: 'nasama-book',
+    });
   }
-  return '';
+  return firebase.firestore();
 }
 
-/* Fetch all docs from a collection, handling pagination */
+/* Fetch all docs from a Firestore collection using the SDK */
 async function fbFetchAll(collection) {
-  let docs=[], pageToken='';
-  do {
-    const url=FB_BASE+'/'+collection+'?pageSize=300'+(pageToken?'&pageToken='+pageToken:'');
-    const res=await fetch(url);
-    if(!res.ok) throw new Error('Firestore '+collection+' HTTP '+res.status);
-    const data=await res.json();
-    if(data.error) throw new Error('Firestore error: '+data.error.message);
-    (data.documents||[]).forEach(doc=>{
-      const fields={};
-      Object.entries(doc.fields||{}).forEach(([k,v])=>{fields[k]=fbVal(v);});
-      // Extract doc ID from name path
-      const id=doc.name.split('/').pop();
-      docs.push({_docId:id,...fields});
-    });
-    pageToken=data.nextPageToken||'';
-  } while(pageToken);
-  return docs;
+  const db = getFirestore();
+  const snapshot = await db.collection(collection).get();
+  return snapshot.docs.map(doc => ({_docId: doc.id, ...doc.data()}));
 }
 
 /* Map a Firestore broker doc → HR employee record */

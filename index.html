@@ -442,7 +442,8 @@ const EMPLOYEES_INIT = [
   {id:'EMP012',name:'Rajab Zahrawy',nationality:'Syrian',email:'rajab@nasama.ae',phone:'+971 58 588 0024',title:'Broker',dept:'Sales',joined:'',type:'commission',salary:0,housing:0,transport:0,passExpiry:'',visaExpiry:'',emiratesId:'',contractStart:'',contractEnd:'',status:'active',manager:'',notes:'',leaveBalance:21,leaveTaken:0,reraNo:'',reraExp:''},
   {id:'EMP013',name:'Mohamad Teryaki',nationality:'Lebanese',email:'mohamad.teryaki@nasama.ae',phone:'+971 55 838 8197',title:'Broker',dept:'Sales',joined:'',type:'commission',salary:0,housing:0,transport:0,passExpiry:'',visaExpiry:'',emiratesId:'',contractStart:'',contractEnd:'',status:'active',manager:'',notes:'',leaveBalance:21,leaveTaken:0,reraNo:'',reraExp:''},
   {id:'EMP014',name:'Tarek Salhani',nationality:'Saudi Arabia',email:'tarek.salhani@nasama.ae',phone:'+971 55 731 0587',title:'Broker',dept:'Sales',joined:'',type:'commission',salary:0,housing:0,transport:0,passExpiry:'',visaExpiry:'',emiratesId:'',contractStart:'',contractEnd:'',status:'active',manager:'',notes:'',leaveBalance:21,leaveTaken:0,reraNo:'',reraExp:''},
-  {id:'EMP015',name:'Alaa Muneer',nationality:'Jordanian',email:'alaa@nasama.ae',phone:'+971 50 190 1890',title:'Broker',dept:'Sales',joined:'',type:'commission',salary:0,housing:0,transport:0,passExpiry:'',visaExpiry:'',emiratesId:'',contractStart:'',contractEnd:'',status:'active',manager:'',notes:'',leaveBalance:21,leaveTaken:0,reraNo:'',reraExp:''}
+  {id:'EMP015',name:'Mohammed Teryaki',nationality:'Lebanese',email:'mohammed.teryaki@nasama.ae',phone:'+971 55 838 8197',title:'Broker',dept:'Sales',joined:'',type:'commission',salary:0,housing:0,transport:0,passExpiry:'',visaExpiry:'',emiratesId:'',contractStart:'',contractEnd:'',status:'active',manager:'',notes:'',leaveBalance:21,leaveTaken:0,reraNo:'',reraExp:''},
+  {id:'EMP016',name:'Alaa Muneer',nationality:'Jordanian',email:'alaa@nasama.ae',phone:'+971 50 190 1890',title:'Broker',dept:'Sales',joined:'',type:'commission',salary:0,housing:0,transport:0,passExpiry:'',visaExpiry:'',emiratesId:'',contractStart:'',contractEnd:'',status:'active',manager:'',notes:'',leaveBalance:21,leaveTaken:0,reraNo:'',reraExp:''}
 ];
 
 const SALARY_INIT = [];
@@ -4957,8 +4958,15 @@ function TopBar({page,onToggleSidebar,counts,fbStatus,fbError}) {
    APP ROOT
 ═══════════════════════════════════════════════════════ */
 /* ═══════════════════════════════════════════════════════
-   DATA PERSISTENCE — Firebase Realtime DB + localStorage
-   Project: nasama-hr | Uses firebaseio.com (not googleapis.com)
+   DATA PERSISTENCE — Firebase Realtime DB (primary) + localStorage (cache)
+   Project: nasama-hr | Uses firebaseio.com REST API
+   
+   FLOW:
+   1. App shows loading screen
+   2. Firebase is tested & all data loaded
+   3. State is populated from Firebase (or fallback defaults if first run)
+   4. Only AFTER load completes, save-on-change hooks are enabled
+   5. Every state change writes to both Firebase + localStorage
 ═══════════════════════════════════════════════════════ */
 const FB_CFG = {
   apiKey: 'AIzaSyAqkLr-uJKIE8uW8zrgqlMpte0KfGPnOBM',
@@ -4968,7 +4976,7 @@ const FB_CFG = {
 const STORAGE_KEY = 'nasama_hr_';
 const DATA_KEYS = ['employees','salaryRecs','commRecs','leaves','requests','attData','auditLog','users'];
 
-/* ── localStorage (always works) ── */
+/* ── localStorage (cache layer — never the source of truth) ── */
 function loadLocal(key, fallback) {
   try { const r=localStorage.getItem(STORAGE_KEY+key); if(r) return JSON.parse(r); } catch(e){}
   return fallback;
@@ -4980,61 +4988,125 @@ function saveLocal(key, data) {
 /* ── Firebase Realtime DB REST helpers ── */
 async function fbRead(key) {
   const url = FB_CFG.dbUrl+'/nasama_hr/'+key+'.json?auth='+FB_CFG.apiKey;
-  const resp = await fetch(url);
+  const resp = await fetch(url, { signal: AbortSignal.timeout(12000) });
   if(!resp.ok) throw new Error('DB read error: '+resp.status);
-  const data = await resp.json();
-  return data; // null if doesn't exist
+  let data = await resp.json();
+  // Firebase converts arrays to objects with numeric keys — restore them
+  data = restoreArrays(data);
+  return data;
+}
+
+/* Firebase Realtime DB stores arrays as objects with "0","1","2"... keys.
+   This recursively converts them back to proper JS arrays. */
+function restoreArrays(val) {
+  if(val===null || val===undefined || typeof val!=='object') return val;
+  if(Array.isArray(val)) return val.map(restoreArrays);
+  const keys = Object.keys(val);
+  // Check if all keys are sequential integers starting from 0
+  const isArray = keys.length>0 && keys.every((k,i)=> String(i)===k);
+  if(isArray) {
+    return keys.map(k => restoreArrays(val[k]));
+  }
+  // Otherwise restore nested values
+  const out = {};
+  for(const k of keys) out[k] = restoreArrays(val[k]);
+  return out;
 }
 
 async function fbWrite(key, data) {
   const url = FB_CFG.dbUrl+'/nasama_hr/'+key+'.json?auth='+FB_CFG.apiKey;
-  const resp = await fetch(url, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data) });
+  const resp = await fetch(url, { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data), signal: AbortSignal.timeout(15000) });
   if(!resp.ok) throw new Error('DB write error: '+resp.status);
   return true;
 }
 
-/* ── Dual load: try Firebase first, fall back to localStorage ── */
-async function loadData(key, fallback) {
-  try {
-    const fbData = await fbRead(key);
-    if(fbData!==null) {
-      saveLocal(key, fbData);
-      return fbData;
-    }
-  } catch(e) { console.warn('Firebase load failed for '+key+':', e.message); }
-  return loadLocal(key, fallback);
-}
-
-/* ── Dual save: localStorage immediately + Firebase async ── */
+/* ── Debounced dual save: localStorage immediately + Firebase async ── */
 let _saveTimers = {};
+let _fbReady = false; // global gate — prevents saves until initial load completes
 function saveDual(key, data) {
+  if(!_fbReady) return; // ← CRITICAL: don't save defaults over real data
   saveLocal(key, data);
   clearTimeout(_saveTimers[key]);
   _saveTimers[key] = setTimeout(()=>{
     fbWrite(key, data).catch(e=>console.warn('Firebase save failed for '+key+':', e.message));
-  }, 500);
+  }, 400);
+}
+
+/* ── Full data load from Firebase (called once on mount) ── */
+async function loadAllFromFirebase() {
+  const testUrl = FB_CFG.dbUrl+'/nasama_hr/connection_test.json?auth='+FB_CFG.apiKey;
+  const resp = await fetch(testUrl, { method:'PUT', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({status:'connected', lastPing:new Date().toISOString()}),
+    signal: AbortSignal.timeout(10000)
+  });
+  if(!resp.ok) {
+    const body = await resp.text();
+    let msg = 'HTTP '+resp.status;
+    try { const j=JSON.parse(body); msg=j.error||msg; } catch(e){}
+    throw new Error(msg);
+  }
+  const results = await Promise.allSettled(DATA_KEYS.map(k => fbRead(k)));
+  const loaded = {};
+  DATA_KEYS.forEach((k, i) => {
+    if(results[i].status==='fulfilled' && results[i].value!==null) {
+      loaded[k] = results[i].value;
+      saveLocal(k, results[i].value);
+    }
+  });
+  return loaded;
+}
+
+/* ── Seed initial data to Firebase if it's a brand-new database ── */
+async function seedFirebaseIfEmpty(loaded, defaults) {
+  const writePromises = [];
+  DATA_KEYS.forEach(k => {
+    if(!(k in loaded) && defaults[k]!==undefined) {
+      console.log('🌱 Seeding Firebase with default '+k);
+      writePromises.push(
+        fbWrite(k, defaults[k]).then(()=>saveLocal(k, defaults[k])).catch(e=>console.warn('Seed failed for '+k+':', e.message))
+      );
+    }
+  });
+  if(writePromises.length>0) await Promise.allSettled(writePromises);
 }
 
 function App() {
   const [session,setSession]=useState(()=>{
     const s=loadLocal('session',null);
-    // Clear old-format sessions (from pre-RBAC system) that lack userId
     if(s && !s.userId) return null;
     return s;
   });
   const [page,setPageRaw]=useState('dashboard');
   const [sidebarOpen,setSidebarOpen]=useState(false);
   const [toast,setToast]=useState(null);
-  const [employees,setEmployees]=useState(()=>loadLocal('employees',EMPLOYEES_INIT));
-  const [salaryRecs,setSalaryRecs]=useState(()=>loadLocal('salaryRecs',SALARY_INIT));
-  const [commRecs,setCommRecs]=useState(()=>loadLocal('commRecs',COMMISSION_INIT));
-  const [leaves,setLeaves]=useState(()=>loadLocal('leaves',LEAVES_INIT));
-  const [requests,setRequests]=useState(()=>loadLocal('requests',REQUESTS_INIT));
-  const [attData,setAttData]=useState(()=>loadLocal('attData',ATT_INIT));
-  const [auditLog,setAuditLog]=useState(()=>loadLocal('auditLog',[]));
-  const [users,setUsers]=useState(()=>loadLocal('users',[]));
 
-  /* ── Ensure valid users exist (runs after Firebase load too) ── */
+  /* ── All data states start with null (loading) ── */
+  const [employees,setEmployees]=useState(null);
+  const [salaryRecs,setSalaryRecs]=useState(null);
+  const [commRecs,setCommRecs]=useState(null);
+  const [leaves,setLeaves]=useState(null);
+  const [requests,setRequests]=useState(null);
+  const [attData,setAttData]=useState(null);
+  const [auditLog,setAuditLog]=useState(null);
+  const [users,setUsers]=useState(null);
+
+  const [fbStatus,setFbStatus]=useState('loading'); // loading | connected | offline
+  const [fbError,setFbError]=useState('');
+  const [dataReady,setDataReady]=useState(false); // true once initial load is done
+
+  /* ── Default data map for seeding ── */
+  const DEFAULTS = React.useMemo(()=>({
+    employees: EMPLOYEES_INIT,
+    salaryRecs: SALARY_INIT,
+    commRecs: COMMISSION_INIT,
+    leaves: LEAVES_INIT,
+    requests: REQUESTS_INIT,
+    attData: ATT_INIT,
+    auditLog: [],
+    users: [],
+  }),[]);
+
+  /* ── Ensure valid users exist ── */
   function ensureUsersSeeded(currentUsers, setter) {
     const valid = Array.isArray(currentUsers) && currentUsers.length>0 && currentUsers.some(u=>u.passwordHash && u.passwordHash.length===64);
     if(!valid) {
@@ -5048,7 +5120,6 @@ function App() {
       });
     }
   }
-  useEffect(()=>{ ensureUsersSeeded(users, setUsers); },[]);
 
   /* ── Audit trail helper ── */
   function addAudit(action, detail, empId) {
@@ -5060,75 +5131,104 @@ function App() {
       empId: empId||'',
       actor: session?.role==='admin'?'Admin':(session?.empId||'System'),
     };
-    setAuditLog(prev => [entry, ...prev].slice(0, 500)); // keep last 500 entries
+    setAuditLog(prev => [entry, ...(prev||[])].slice(0, 500));
   }
-  const [fbStatus,setFbStatus]=useState('loading'); // loading | connected | offline
-  const [fbError,setFbError]=useState('');
 
-  /* On mount: test Firebase connection and load data */
+  /* ═══════════════════════════════════════════════════
+     MASTER LOAD: Firebase first → localStorage fallback → defaults
+     Runs ONCE on mount. No saves happen until this completes.
+  ═══════════════════════════════════════════════════ */
   useEffect(()=>{
+    let cancelled = false;
     (async()=>{
+      const setters = {employees:setEmployees, salaryRecs:setSalaryRecs, commRecs:setCommRecs, leaves:setLeaves, requests:setRequests, attData:setAttData, auditLog:setAuditLog, users:setUsers};
+
       try {
-        console.log('🔍 Testing Firebase Realtime DB at: '+FB_CFG.dbUrl);
-        const testUrl = FB_CFG.dbUrl+'/nasama_hr/connection_test.json?auth='+FB_CFG.apiKey;
-        const resp = await fetch(testUrl, { method:'PUT', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({status:'connected', lastPing:new Date().toISOString()})
-        });
-        if(!resp.ok) {
-          const body = await resp.text();
-          let msg = 'HTTP '+resp.status;
-          try { const j=JSON.parse(body); msg=j.error||msg; } catch(e){}
-          console.error('❌ Firebase error:', msg);
-          setFbError(msg);
-          setFbStatus('offline');
-          return;
-        }
+        console.log('🔍 Connecting to Firebase Realtime DB...');
+        const loaded = await loadAllFromFirebase();
+        if(cancelled) return;
+
+        console.log('✅ Firebase connected — keys found:', Object.keys(loaded).join(', ') || '(none — fresh DB)');
         setFbStatus('connected');
         setFbError('');
-        // Load data from Firebase
-        const results = await Promise.allSettled(DATA_KEYS.map(k=>loadData(k,null)));
-        const setters = {employees:setEmployees, salaryRecs:setSalaryRecs, commRecs:setCommRecs, leaves:setLeaves, requests:setRequests, attData:setAttData, auditLog:setAuditLog, users:setUsers};
-        DATA_KEYS.forEach((k,i)=>{
-          if(results[i].status==='fulfilled' && results[i].value!==null) {
-            if(k==='users') {
-              const fbUsers = results[i].value;
-              const hasValidHashes = Array.isArray(fbUsers) && fbUsers.some(u=>u.passwordHash && u.passwordHash.length===64);
-              if(hasValidHashes) {
-                setUsers(fbUsers);
-                console.log('✅ Valid users loaded from Firebase');
-              } else {
-                console.log('⚠ Firebase users invalid — re-seeding');
-                ensureUsersSeeded([], setUsers);
-              }
+
+        // Apply loaded data (or defaults for missing keys)
+        DATA_KEYS.forEach(k => {
+          if(k==='users') {
+            const fbUsers = loaded[k];
+            const hasValid = Array.isArray(fbUsers) && fbUsers.some(u=>u.passwordHash && u.passwordHash.length===64);
+            if(hasValid) {
+              setUsers(fbUsers);
+              console.log('✅ Valid users loaded from Firebase');
             } else {
-              setters[k](results[i].value);
+              setUsers(DEFAULTS[k]);
             }
+          } else {
+            setters[k](loaded[k] !== undefined ? loaded[k] : DEFAULTS[k]);
           }
         });
-        // If Firebase had no users key at all, ensure seed ran
-        const usersResult = results[DATA_KEYS.indexOf('users')];
-        if(!usersResult || usersResult.status!=='fulfilled' || usersResult.value===null) {
-          ensureUsersSeeded([], setUsers);
-        }
-        console.log('✅ Firebase Realtime DB connected — data loaded');
+
+        // Seed Firebase with defaults for any missing keys
+        await seedFirebaseIfEmpty(loaded, DEFAULTS);
+
+        // Ensure users are seeded
+        const fbUsers = loaded['users'];
+        const hasValid = Array.isArray(fbUsers) && fbUsers.some(u=>u.passwordHash && u.passwordHash.length===64);
+        if(!hasValid) ensureUsersSeeded([], setUsers);
+
       } catch(e) {
         console.error('❌ Firebase connection failed:', e.message);
+        if(cancelled) return;
         setFbError(e.message);
         setFbStatus('offline');
+
+        // Fall back to localStorage → defaults
+        console.log('📦 Loading from localStorage cache...');
+        DATA_KEYS.forEach(k => {
+          setters[k](loadLocal(k, DEFAULTS[k]));
+        });
+        ensureUsersSeeded(loadLocal('users',[]), setUsers);
+      }
+
+      if(!cancelled) {
+        // Enable saving AFTER all data is loaded
+        _fbReady = true;
+        setDataReady(true);
+        console.log('🟢 Data ready — save hooks enabled');
       }
     })();
+    return ()=>{ cancelled=true; };
   },[]);
 
-  /* Auto-save to localStorage + Firebase whenever data changes */
-  useEffect(()=>saveDual('employees',employees),[employees]);
-  useEffect(()=>saveDual('salaryRecs',salaryRecs),[salaryRecs]);
-  useEffect(()=>saveDual('commRecs',commRecs),[commRecs]);
-  useEffect(()=>saveDual('leaves',leaves),[leaves]);
-  useEffect(()=>saveDual('requests',requests),[requests]);
-  useEffect(()=>saveDual('attData',attData),[attData]);
-  useEffect(()=>saveDual('auditLog',auditLog),[auditLog]);
-  useEffect(()=>saveDual('users',users),[users]);
+  /* ── Auto-save to localStorage + Firebase whenever data changes ── */
+  /* saveDual() internally checks _fbReady, so these won't fire during initial load */
+  useEffect(()=>{if(employees!==null) saveDual('employees',employees);},[employees]);
+  useEffect(()=>{if(salaryRecs!==null) saveDual('salaryRecs',salaryRecs);},[salaryRecs]);
+  useEffect(()=>{if(commRecs!==null) saveDual('commRecs',commRecs);},[commRecs]);
+  useEffect(()=>{if(leaves!==null) saveDual('leaves',leaves);},[leaves]);
+  useEffect(()=>{if(requests!==null) saveDual('requests',requests);},[requests]);
+  useEffect(()=>{if(attData!==null) saveDual('attData',attData);},[attData]);
+  useEffect(()=>{if(auditLog!==null) saveDual('auditLog',auditLog);},[auditLog]);
+  useEffect(()=>{if(users!==null) saveDual('users',users);},[users]);
   useEffect(()=>saveLocal('session',session),[session]);
+
+  /* ═══════════════════════════════════════════════════
+     LOADING SCREEN — shown until Firebase load completes
+  ═══════════════════════════════════════════════════ */
+  if(!dataReady) {
+    return (
+      <div style={{minHeight:'100vh',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',background:'var(--bg2)',gap:16}}>
+        <div style={{width:48,height:48,background:'linear-gradient(135deg,var(--blue) 0%,#60a5fa 100%)',borderRadius:12,display:'flex',alignItems:'center',justifyContent:'center',color:'#fff',fontWeight:800,fontSize:20}}>N</div>
+        <div style={{fontSize:16,fontWeight:700,color:'var(--text1)'}}>Nasama HR</div>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <div style={{width:18,height:18,border:'3px solid var(--border)',borderTopColor:'var(--blue)',borderRadius:'50%',animation:'spin 0.8s linear infinite'}}/>
+          <span style={{fontSize:13,color:'var(--text2)'}}>{fbStatus==='loading'?'Connecting to database...':'Loading data...'}</span>
+        </div>
+        {fbError && <div style={{fontSize:12,color:'var(--red)',maxWidth:400,textAlign:'center',padding:'8px 16px',background:'var(--red-light)',borderRadius:8}}>⚠ {fbError}<br/>Falling back to local data...</div>}
+        <style>{'@keyframes spin{to{transform:rotate(360deg)}}'}</style>
+      </div>
+    );
+  }
 
   function setPage(p){setPageRaw(p);setSidebarOpen(false);}
   function showToast(msg,type='success'){setToast({msg,type});setTimeout(()=>setToast(null),3200);}

@@ -239,7 +239,7 @@ export function generateHRLetter(type, emp, extraData) {
       
       <table style="width:80%;margin:16px 0;border-collapse:collapse;">
         <tr style="background:#f8fafc;"><td style="padding:8px 14px;border:1px solid #e2e8f0;font-weight:600;">Basic Salary</td><td style="padding:8px 14px;border:1px solid #e2e8f0;text-align:right;font-weight:700;">AED ${(emp.salary||0).toLocaleString()}</td></tr>
-        ${(emp.housing||0)>0?'<tr><td style="padding:8px 14px;border:1px solid #e2e8f0;">Housing Allowance</td><td style="padding:8px 14px;border:1px solid #e2e8f0;text-align:right;font-weight:700;">AED '+(emp.housing).toLocaleString()+'</td></tr>':''}
+        ${(emp.housing||0)>0?'<tr><td style="padding:8px 14px;border:1px solid #e2e8f0;">SIM Card Allow</td><td style="padding:8px 14px;border:1px solid #e2e8f0;text-align:right;font-weight:700;">AED '+(emp.housing).toLocaleString()+'</td></tr>':''}
         ${(emp.transport||0)>0?'<tr><td style="padding:8px 14px;border:1px solid #e2e8f0;">Transport Allowance</td><td style="padding:8px 14px;border:1px solid #e2e8f0;text-align:right;font-weight:700;">AED '+(emp.transport).toLocaleString()+'</td></tr>':''}
         <tr style="background:#f1f5f9;"><td style="padding:8px 14px;border:1px solid #cbd5e1;font-weight:800;">Total Monthly Salary</td><td style="padding:8px 14px;border:1px solid #cbd5e1;text-align:right;font-weight:800;font-size:15px;">AED ${((emp.salary||0)+(emp.housing||0)+(emp.transport||0)).toLocaleString()}</td></tr>
       </table>

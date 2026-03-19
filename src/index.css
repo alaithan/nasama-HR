@@ -256,10 +256,23 @@ input[type=number]{-moz-appearance:textfield}
 /* ── PRINT ─── */
 @media print{
   .sidebar,.topbar,.no-print,button,.modal-footer,.close-btn{display:none!important}
-  .main{margin:0!important}.overlay{position:static!important;background:none!important;padding:0!important;display:block!important}
-  .modal{box-shadow:none!important;border:none!important;max-width:100%!important}
   body{background:#fff!important}
-  /* When print overlay is active, hide the toolbar */
+  .main{margin:0!important; overflow:visible!important}
+  
+  /* Hide the underlying app content, but whitelist the overlay modal */
+  .content{visibility:hidden!important; padding:0!important}
+  .overlay{
+    visibility:visible!important;
+    position:absolute!important;
+    inset:0!important;
+    background:#fff!important;
+    padding:0!important;
+    display:block!important;
+  }
+  .modal{box-shadow:none!important;border:none!important;max-width:100%!important;margin:0!important}
+  .modal > div{max-height:none!important;overflow:visible!important;padding-top:0!important}
+  
+  /* When programmatic print overlay is active, hide the toolbar */
   .report-toolbar-noprint { display:none!important; }
-  #nasama-print-overlay { position:static!important; overflow:visible!important; }
+  #nasama-print-overlay { position:static!important; overflow:visible!important; visibility:visible!important; }
 }

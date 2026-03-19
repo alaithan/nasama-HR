@@ -140,7 +140,7 @@ function buildReceiptHTML(type, rec, emp) {
 
   if(type==='salary') {
     const earnings = [['Basic Salary', rec.basic]];
-    if(rec.housing>0) earnings.push(['Housing Allowance', rec.housing]);
+    if(rec.housing>0) earnings.push(['SIM Card Allow', rec.housing]);
     if(rec.transport>0) earnings.push(['Transport Allowance', rec.transport]);
     if(rec.bonus>0) earnings.push(['Bonus / Incentive', rec.bonus]);
     const gross = earnings.reduce((a,[,v])=>a+(+v||0),0);
@@ -202,7 +202,7 @@ function buildReceiptHTML(type, rec, emp) {
       <tr style="border-bottom:1px solid #e2e8f0;"><td style="padding:8px 0;font-size:13px;color:#64748b;">Client Name</td><td style="padding:8px 0;font-size:13px;font-weight:600;text-align:right;">${rec.client||'—'}</td></tr>
       <tr style="border-bottom:1px solid #e2e8f0;"><td style="padding:8px 0;font-size:13px;color:#64748b;">Property / Location</td><td style="padding:8px 0;font-size:13px;font-weight:600;text-align:right;">${rec.property||'—'}</td></tr>
       ${rec.propVal>0?`<tr style="border-bottom:1px solid #e2e8f0;"><td style="padding:8px 0;font-size:13px;color:#64748b;">Property Value</td><td style="padding:8px 0;font-size:13px;font-weight:600;text-align:right;">${fmt(rec.propVal)}</td></tr>`:''}
-      <tr style="border-bottom:1px solid #e2e8f0;"><td style="padding:8px 0;font-size:13px;color:#64748b;">Commission Rate</td><td style="padding:8px 0;font-size:13px;font-weight:600;text-align:right;">${rec.rate||0}%</td></tr>
+      <tr style="border-bottom:1px solid #e2e8f0;"><td style="padding:8px 0;font-size:13px;color:#64748b;">Broker Commission</td><td style="padding:8px 0;font-size:13px;font-weight:600;text-align:right;">${rec.rate||0}%</td></tr>
       ${rec.approvedBy?`<tr style="border-bottom:1px solid #e2e8f0;"><td style="padding:8px 0;font-size:13px;color:#64748b;">Approved By</td><td style="padding:8px 0;font-size:13px;font-weight:600;text-align:right;">${rec.approvedBy}</td></tr>`:''}
     </table>
     <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 0 0;border-top:3px solid #0f172a;margin-top:10px;">
@@ -325,7 +325,7 @@ function ReceiptModal({open, onClose, type, rec, emp}) {
 function SalaryReceiptPreview({rec, emp}) {
   if(!rec||!emp) return null;
   const earnings=[['Basic Salary',rec.basic]];
-  if(rec.housing>0) earnings.push(['Housing Allowance',rec.housing]);
+  if(rec.housing>0) earnings.push(['SIM Card Allow',rec.housing]);
   if(rec.transport>0) earnings.push(['Transport Allowance',rec.transport]);
   if(rec.bonus>0) earnings.push(['Bonus / Incentive',rec.bonus]);
   const deductions=[];
@@ -390,7 +390,7 @@ function CommissionReceiptPreview({rec, emp}) {
           <tr><td>Client Name</td><td style={{textAlign:'right',fontWeight:600}}>{rec.client||'—'}</td></tr>
           <tr><td>Property / Location</td><td style={{textAlign:'right',fontWeight:600}}>{rec.property||'—'}</td></tr>
           {(rec.propVal||0)>0&&<tr><td>Property Value</td><td style={{textAlign:'right',fontWeight:600}}>{fmtMoney(rec.propVal)}</td></tr>}
-          <tr><td>Commission Rate</td><td style={{textAlign:'right',fontWeight:600}}>{rec.rate||0}%</td></tr>
+          <tr><td>Broker Commission</td><td style={{textAlign:'right',fontWeight:600}}>{rec.rate||0}%</td></tr>
           {rec.approvedBy&&<tr><td>Approved By</td><td style={{textAlign:'right',fontWeight:600}}>{rec.approvedBy}</td></tr>}
         </tbody>
       </table>
@@ -497,7 +497,7 @@ function EmployeeFormModal({open,onClose,initial,onSave,employees:allEmployees})
         </div>
         <div className="form-grid3">
           {(f.type==='salary'||f.type==='salary_commission')&&<div className="form-group"><label className="form-label">Basic Salary (AED)</label><input className="form-input" type="number" value={f.salary} onChange={upd('salary')}/></div>}
-          {(f.type==='salary'||f.type==='salary_commission')&&<><div className="form-group"><label className="form-label">Housing Allow. (AED)</label><input className="form-input" type="number" value={f.housing} onChange={upd('housing')}/></div>
+          {(f.type==='salary'||f.type==='salary_commission')&&<><div className="form-group"><label className="form-label">SIM Card Allow. (AED)</label><input className="form-input" type="number" value={f.housing} onChange={upd('housing')}/></div>
           <div className="form-group"><label className="form-label">Transport Allow. (AED)</label><input className="form-input" type="number" value={f.transport} onChange={upd('transport')}/></div></>}
         </div>
       </div>
@@ -568,7 +568,7 @@ function AddSalaryModal({open,onClose,employees,salaryRecs,onSave}) {
       </div>
       <div className="form-grid">
         <div className="form-group"><label className="form-label">Basic (AED)</label><input className="form-input" type="number" value={f.basic} onChange={upd('basic')}/></div>
-        <div className="form-group"><label className="form-label">Housing (AED)</label><input className="form-input" type="number" value={f.housing} onChange={upd('housing')}/></div>
+        <div className="form-group"><label className="form-label">SIM Card Allow. (AED)</label><input className="form-input" type="number" value={f.housing} onChange={upd('housing')}/></div>
         <div className="form-group"><label className="form-label">Transport (AED)</label><input className="form-input" type="number" value={f.transport} onChange={upd('transport')}/></div>
         <div className="form-group"><label className="form-label">Bonus (AED)</label><input className="form-input" type="number" value={f.bonus} onChange={upd('bonus')}/></div>
         <div className="form-group"><label className="form-label">Deductions (AED)</label><input className="form-input" type="number" value={f.deductions} onChange={upd('deductions')}/></div>
@@ -730,7 +730,7 @@ function BatchPayrollModal({open,onClose,employees,salaryRecs,onSave,showToast})
                     <th style={{width:32,padding:'8px'}}></th>
                     <th>Employee</th>
                     <th style={{textAlign:'right'}}>Basic</th>
-                    <th style={{textAlign:'right'}}>Housing</th>
+                    <th style={{textAlign:'right'}}>SIM Card</th>
                     <th style={{textAlign:'right'}}>Transport</th>
                     <th style={{textAlign:'right',borderLeft:'2px solid var(--border2)',fontWeight:800}}>Net Pay</th>
                   </tr></thead>
@@ -894,10 +894,10 @@ function AddCommModal({open,onClose,employees,onSave,initial=null}) {
       <div className="form-section">
         <div className="form-section-title">Commission Calculation</div>
         <div className="form-grid">
-          <div className="form-group"><label className="form-label">Property / Transaction Value (AED)</label>
+          <div className="form-group"><label className="form-label">Total Commission (AED)</label>
             <input className="form-input" type="number" value={f.propVal} onChange={upd('propVal')} placeholder="0"/>
           </div>
-          <div className="form-group"><label className="form-label">Commission Rate (%)</label>
+          <div className="form-group"><label className="form-label">Broker Commission (%)</label>
             <input className="form-input" type="number" step=".1" value={f.rate} onChange={upd('rate')} placeholder="e.g. 3.0"/>
           </div>
         </div>
@@ -2158,7 +2158,7 @@ function SalaryDetailModal({open,onClose,rec,emp,onOpenReceipt,onMarkPaid}) {
   const ded=rec.deductions||0;
   const items=[
     ['Basic Salary',rec.basic,'var(--text1)'],
-    (rec.housing||0)>0&&['Housing Allowance',rec.housing,'var(--text1)'],
+    (rec.housing||0)>0&&['SIM Card Allow',rec.housing,'var(--text1)'],
     (rec.transport||0)>0&&['Transport Allowance',rec.transport,'var(--text1)'],
     (rec.bonus||0)>0&&['Bonus / Incentive',rec.bonus,'var(--amber)'],
   ].filter(Boolean);
@@ -2578,7 +2578,7 @@ function PayrollPage({employees,salaryRecs,setSalaryRecs,commRecs,setCommRecs,sh
                   <tr>
                     <th>Employee</th><th>Period</th>
                     <th style={{textAlign:'right'}}>Basic</th>
-                    <th style={{textAlign:'right'}}>Housing</th>
+                    <th style={{textAlign:'right'}}>SIM Card</th>
                     <th style={{textAlign:'right'}}>Transport</th>
                     <th style={{textAlign:'right'}}>Bonus</th>
                     <th style={{textAlign:'right',color:'var(--red)'}}>Deductions</th>
@@ -3218,7 +3218,7 @@ function ReportsPage({employees,leaves,salaryRecs,commRecs,attData}) {
           {label:'Employee',bold:true},
           {label:'Period'},
           {label:'Basic',align:'right'},
-          {label:'Housing',align:'right'},
+          {label:'SIM Card',align:'right'},
           {label:'Transport',align:'right'},
           {label:'Bonus',align:'right'},
           {label:'Deductions',align:'right',color:'#dc2626'},

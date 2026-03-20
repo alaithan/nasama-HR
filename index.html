@@ -9,6 +9,112 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <script type="module" crossorigin src="./assets/index-vk5KeLT9.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-CTfi76Rh.css">
+
+    <!-- HR Officer Reports Access Patch -->
+    <script>
+    (function() {
+      'use strict';
+
+      var SESSION_KEY = 'nasama_hr_session';
+      var BLOCKED_ROLE = 'hr_officer';
+      var BLOCKED_PAGE = 'Reports';
+      var DASHBOARD_LABEL = 'Dashboard';
+
+      function getRole() {
+        try {
+          var raw = localStorage.getItem(SESSION_KEY);
+          if (!raw) return null;
+          var session = JSON.parse(raw);
+          return session && session.role ? session.role : null;
+        } catch(e) { return null; }
+      }
+
+      function isBlocked() {
+        return getRole() === BLOCKED_ROLE;
+      }
+
+      // Hide the Reports nav item in the sidebar
+      function patchSidebar() {
+        if (!isBlocked()) return;
+        var navItems = document.querySelectorAll('.nav-item');
+        for (var i = 0; i < navItems.length; i++) {
+          var el = navItems[i];
+          // Check if this nav item's text content contains "Reports"
+          // but NOT "Dashboard" or other items with similar names
+          var text = el.textContent.trim();
+          if (text === 'Reports' || text === '📈Reports' || text === '📈 Reports') {
+            el.style.display = 'none';
+          }
+        }
+      }
+
+      // If HR officer lands on Reports page, redirect to Dashboard
+      function patchPageAccess() {
+        if (!isBlocked()) return;
+        var pageTitle = document.querySelector('.page-title');
+        if (pageTitle && pageTitle.textContent.trim() === BLOCKED_PAGE) {
+          // Find Dashboard nav item and click it to redirect
+          var navItems = document.querySelectorAll('.nav-item');
+          for (var i = 0; i < navItems.length; i++) {
+            var text = navItems[i].textContent.trim();
+            if (text === DASHBOARD_LABEL || text === '📊Dashboard' || text === '📊 Dashboard') {
+              navItems[i].click();
+              return;
+            }
+          }
+        }
+      }
+
+      // Block the Reports tab buttons that might appear on other pages (e.g., Payroll)
+      function patchReportTabs() {
+        if (!isBlocked()) return;
+        var tabs = document.querySelectorAll('.tab');
+        for (var i = 0; i < tabs.length; i++) {
+          var text = tabs[i].textContent.trim();
+          // Don't block report-related tabs within other pages (like payroll exceptions)
+          // Only block direct "Reports" navigation
+        }
+      }
+
+      function runPatches() {
+        patchSidebar();
+        patchPageAccess();
+      }
+
+      // Start observing DOM changes (React re-renders)
+      function startObserver() {
+        if (!document.body) {
+          setTimeout(startObserver, 50);
+          return;
+        }
+
+        // Run immediately
+        runPatches();
+
+        // MutationObserver for React re-renders
+        var observer = new MutationObserver(function(mutations) {
+          // Debounce to avoid excessive calls
+          clearTimeout(observer._timer);
+          observer._timer = setTimeout(runPatches, 16);
+        });
+
+        observer.observe(document.body, {
+          childList: true,
+          subtree: true
+        });
+
+        // Fallback periodic check (lightweight)
+        setInterval(runPatches, 500);
+      }
+
+      // Wait for DOM ready
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', startObserver);
+      } else {
+        startObserver();
+      }
+    })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -7,8 +7,8 @@
     <title>Nasama HR - Real Estate Dubai</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-    <script type="module" crossorigin src="./assets/index-vk5KeLT9.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-CTfi76Rh.css">
+    <script type="module" crossorigin src="./assets/index-DYpOfgP9.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-B50lC15H.css">
 
     <!-- HR Officer Access Restrictions: No Dashboard, No Reports -->
     <script>
@@ -41,7 +41,6 @@
                text.replace(/[^\w\s]/g, '').trim() === label;
       }
 
-      // Hide Dashboard and Reports nav items in the sidebar
       function patchSidebar() {
         if (!isBlocked()) return;
         var navItems = document.querySelectorAll('.nav-item');
@@ -55,7 +54,6 @@
         }
       }
 
-      // If HR officer lands on a blocked page, redirect to Employees
       function patchPageAccess() {
         if (!isBlocked()) return;
         var pageTitle = document.querySelector('.page-title');
@@ -68,7 +66,6 @@
         }
         if (!onBlockedPage) return;
 
-        // Click the Employees nav item to redirect
         var navItems = document.querySelectorAll('.nav-item');
         for (var i = 0; i < navItems.length; i++) {
           if (matchesNav(navItems[i].textContent, REDIRECT_LABEL)) {
@@ -83,7 +80,6 @@
         patchPageAccess();
       }
 
-      // Start observing DOM changes (React re-renders)
       function startObserver() {
         if (!document.body) {
           setTimeout(startObserver, 50);

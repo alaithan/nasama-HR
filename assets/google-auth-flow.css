@@ -1,0 +1,101 @@
+.nasama-auth-extra {
+  margin-top: 18px;
+}
+
+.nasama-auth-sep {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 16px 0;
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.nasama-auth-sep::before,
+.nasama-auth-sep::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: #e2e8f0;
+}
+
+.nasama-google-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 42px;
+  margin-top: 9px;
+  padding: 10px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #0f172a;
+  cursor: pointer;
+  font: 700 13px/1.2 "Segoe UI", system-ui, sans-serif;
+  transition: background .15s, border-color .15s, box-shadow .15s;
+}
+
+.nasama-google-btn:hover {
+  border-color: #94a3b8;
+  background: #f8fafc;
+}
+
+.nasama-google-btn:disabled {
+  cursor: wait;
+  opacity: .7;
+}
+
+.nasama-google-btn.primary {
+  border-color: #2563eb;
+  background: #2563eb;
+  color: #fff;
+}
+
+.nasama-google-icon {
+  display: block;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+}
+
+.nasama-auth-msg {
+  display: none;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.nasama-auth-msg.show {
+  display: block;
+}
+
+.nasama-auth-msg.info {
+  border: 1px solid #93c5fd;
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.nasama-auth-msg.warn {
+  border: 1px solid #fcd34d;
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.nasama-auth-msg.error {
+  border: 1px solid #fca5a5;
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.nasama-auth-msg.success {
+  border: 1px solid #6ee7b7;
+  background: #d1fae5;
+  color: #065f46;
+}

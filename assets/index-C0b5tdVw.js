@@ -125,7 +125,7 @@ Error generating stack: `+e.message+`
       
       <p>This certificate is issued upon the request of the above-named employee without any responsibility on the part of the company.</p>`},"Experience Certificate":{subject:`EXPERIENCE CERTIFICATE`,body:`<p>This is to certify that <strong>${t.name}</strong>, holding <strong>${t.nationality||`_______________`}</strong> nationality, 
       bearing Passport No. <strong>${t.passNo||`_______________`}</strong>, was employed with 
-      <strong>Nasama Properties LLC</strong> from <strong>${a}</strong> to <strong>${t.contractEnd?new Date(t.contractEnd).toLocaleDateString(`en-GB`,{day:`2-digit`,month:`long`,year:`numeric`}):`_______________`}</strong>.</p>
+      <strong>Nasama Properties LLC</strong> from <strong>${a}</strong> till now.</p>
       
       <p>During the period of employment, ${t.name} held the position of <strong>${t.title||`_______________`}</strong> in the 
       <strong>${t.dept||`_______________`}</strong> department and was responsible for the duties associated with the said position.</p>
@@ -141,11 +141,14 @@ Error generating stack: `+e.message+`
       <!-- Letterhead -->
       <div style="display:flex;align-items:center;justify-content:space-between;padding-bottom:16px;border-bottom:3px solid #b8860b;margin-bottom:24px;">
         <img src="${pe}" alt="Nasama Properties" style="height:56px;"/>
-        <div style="text-align:right;font-size:10px;color:#64748b;line-height:1.6;">
-          <strong style="color:#1e293b;font-size:11px;">Nasama Properties LLC</strong><br/>
-          Binghatti Emerald, Office 218, JVC, Dubai<br/>
-          United Arab Emirates<br/>
-          www.nasamaproperties.com
+        <div style="text-align:right;font-size:10px;color:#64748b;line-height:1.7;">
+          <strong style="color:#1e293b;font-size:11px;">Nasama Properties Company LLC</strong><br/>
+          Office 218, Binghatti Emerald, JVC, District 15<br/>
+          Dubai, United Arab Emirates<br/>
+          Tel: +971 50 275 7603<br/>
+          Email: info@nasamaproperties.com<br/>
+          www.nasamaproperties.com<br/>
+          TRN: 104273885400003
         </div>
       </div>
 
@@ -174,23 +177,27 @@ Error generating stack: `+e.message+`
       </div>
 
       <!-- Signature blocks -->
-      <div style="margin-top:50px;display:flex;justify-content:space-between;gap:40px;page-break-inside:avoid;">
+      <div style="margin-top:50px;display:flex;justify-content:space-between;align-items:flex-end;gap:40px;page-break-inside:avoid;">
         <div style="flex:1;">
-          <div style="height:50px;border-bottom:1.5px solid #334155;margin-bottom:8px;"></div>
+          <div style="height:60px;border-bottom:1.5px solid #334155;margin-bottom:8px;"></div>
           <div style="font-size:12px;font-weight:700;color:#0f172a;">Authorized Signatory</div>
           <div style="font-size:11px;color:#64748b;">HR Department</div>
-          <div style="font-size:11px;color:#64748b;">Nasama Properties LLC</div>
+          <div style="font-size:11px;color:#64748b;">Nasama Properties Company LLC</div>
+          <div style="font-size:10px;color:#94a3b8;margin-top:3px;">Date: _______________</div>
         </div>
-        <div style="flex:1;text-align:center;">
-          <div style="display:inline-block;width:100px;height:100px;border:2px dashed #cbd5e1;border-radius:50%;margin-bottom:6px;"></div>
-          <div style="font-size:9px;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;">Company Stamp</div>
+        <div style="text-align:center;">
+          <img src="${me}" alt="Official Stamp" style="width:100px;height:100px;object-fit:contain;transform:rotate(-8deg);opacity:0.9;display:block;margin:0 auto 4px;filter:drop-shadow(0 2px 6px rgba(0,20,80,0.15));"/>
+          <div style="font-size:8px;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;">Official Stamp</div>
         </div>
       </div>
 
       <!-- Footer -->
-      <div style="margin-top:40px;padding-top:10px;border-top:1.5px solid #b8860b;font-size:8.5px;color:#94a3b8;display:flex;justify-content:space-between;">
-        <div><strong style="color:#b8860b;">Nasama Properties LLC</strong> · Binghatti Emerald, Office 218, JVC, Dubai · www.nasamaproperties.com</div>
-        <div>Ref: ${i}</div>
+      <div style="margin-top:40px;padding-top:10px;border-top:1.5px solid #b8860b;font-size:8.5px;color:#94a3b8;display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <strong style="color:#b8860b;">Nasama Properties Company LLC</strong> · Office 218, Binghatti Emerald, JVC, Dubai, UAE<br/>
+          Tel: +971 50 275 7603 · info@nasamaproperties.com · www.nasamaproperties.com · TRN: 104273885400003
+        </div>
+        <div style="text-align:right;white-space:nowrap;">Ref: ${i}</div>
       </div>
     </div>`,c=document.getElementById(`nasama-print-overlay`);c&&c.remove();let l=document.createElement(`div`);l.id=`nasama-print-overlay`,l.style.cssText=`position:fixed;top:0;left:0;width:100%;height:100%;z-index:99999;background:#fff;overflow-y:auto;`;let u=document.createElement(`div`);u.className=`report-toolbar-noprint`,u.style.cssText=`padding:10px 20px;background:#0f172a;color:#fff;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:1;`,u.innerHTML=`
     <span style="font-weight:700;font-size:13px;">📄 ${e} — ${t.name}</span>

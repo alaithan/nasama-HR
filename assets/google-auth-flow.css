@@ -99,3 +99,55 @@
   background: #d1fae5;
   color: #065f46;
 }
+
+.nasama-delete-user-btn {
+  color: #991b1b !important;
+  border-color: #fecaca !important;
+  background: #fff !important;
+  min-width: 58px;
+  font-weight: 700 !important;
+}
+
+.nasama-delete-user-btn:hover {
+  background: #fee2e2 !important;
+}
+
+.nasama-user-status-btn {
+  min-width: 64px;
+  font-weight: 700 !important;
+  background: #fff !important;
+}
+
+.nasama-user-status-btn.danger {
+  color: #b91c1c !important;
+  border-color: #fecaca !important;
+}
+
+.nasama-user-status-btn.danger:hover {
+  background: #fee2e2 !important;
+}
+
+.nasama-user-status-btn.success {
+  color: #047857 !important;
+  border-color: #bbf7d0 !important;
+}
+
+.nasama-user-status-btn.success:hover {
+  background: #dcfce7 !important;
+}
+
+.nasama-guest-linked-cell {
+  color: #475569 !important;
+  font-weight: 700 !important;
+}
+
+.nasama-guest-portal {
+  max-width: 620px;
+}
+
+.nasama-guest-portal p {
+  margin: 0 0 10px;
+  color: #475569;
+  font-size: 14px;
+  line-height: 1.6;
+}

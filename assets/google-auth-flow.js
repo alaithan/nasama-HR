@@ -17,6 +17,8 @@
   var USERS_KEY = STORAGE_PREFIX + "users";
   var ROOT_PATH = "nasama_hr";
   var DEFAULT_ROLE = "broker";
+  var GUEST_EMPLOYEE_ID = "GUEST";
+  var GUEST_EMPLOYEE_LABEL = "Guest";
   var injected = false;
   var busy = false;
 
@@ -66,6 +68,27 @@
     if (!clean) return null;
     return employees.find(function (employee) {
       return String(employee.email || "").trim().toLowerCase() === clean;
+    }) || null;
+  }
+
+  function isGuestEmpId(value) {
+    return String(value || "").trim().toUpperCase() === GUEST_EMPLOYEE_ID;
+  }
+
+  function loadCachedUsers() {
+    try {
+      return normalizeUsers(JSON.parse(localStorage.getItem(USERS_KEY) || "[]"));
+    } catch (error) {
+      return [];
+    }
+  }
+
+  function findCachedUserByAdminInfo(info) {
+    if (!info) return null;
+    return loadCachedUsers().find(function (user) {
+      var sameId = info.id && String(user.id || "").toUpperCase() === info.id;
+      var sameEmail = info.email && String(user.email || "").trim().toLowerCase() === info.email;
+      return sameId || sameEmail;
     }) || null;
   }
 
@@ -166,7 +189,8 @@
           role: user.role,
           name: user.name,
           userId: user.id,
-          empId: user.empId || ""
+          empId: user.empId || "",
+          guest: isGuestEmpId(user.empId)
         })
       );
       localStorage.removeItem("nasama_remember");
@@ -334,6 +358,184 @@
     }
   }
 
+  async function setUserActiveFromAdminRow(row, button, active) {
+    var info = getUserInfoFromAdminRow(row);
+    if (!info) return;
+
+    try {
+      button.disabled = true;
+      button.textContent = "...";
+
+      var firebase = initFirebase();
+      var users = await loadUsers(firebase);
+      var changed = false;
+      var nextUsers = users.map(function (user) {
+        var sameId = info.id && String(user.id || "").toUpperCase() === info.id;
+        var sameEmail = info.email && String(user.email || "").trim().toLowerCase() === info.email;
+        if (!sameId && !sameEmail) return user;
+        changed = true;
+        return Object.assign({}, user, {
+          active: active,
+          approvalStatus: active ? "approved" : "disabled",
+          approvedAt: active ? user.approvedAt || new Date().toISOString() : user.approvedAt || "",
+          disabledAt: active ? "" : new Date().toISOString()
+        });
+      });
+
+      if (!changed) {
+        throw new Error("Could not find this user in Firebase.");
+      }
+
+      await saveUsers(firebase, nextUsers);
+      window.location.reload();
+    } catch (error) {
+      console.error("User status update failed", error);
+      alert("Could not update user: " + error.message);
+      button.disabled = false;
+      button.textContent = active ? "✅" : "🚫";
+    }
+  }
+
+  async function deleteUserFromAdminRow(row, button) {
+    var info = getUserInfoFromAdminRow(row);
+    if (!info) return;
+    if (info.status !== "disabled") {
+      alert("Please disable the user before deleting.");
+      return;
+    }
+    if (!confirm("Delete this disabled user permanently?\n\n" + (info.email || info.id))) return;
+
+    try {
+      button.disabled = true;
+      button.textContent = "...";
+
+      var firebase = initFirebase();
+      var users = await loadUsers(firebase);
+      var nextUsers = users.filter(function (user) {
+        var sameId = info.id && String(user.id || "").toUpperCase() === info.id;
+        var sameEmail = info.email && String(user.email || "").trim().toLowerCase() === info.email;
+        return !sameId && !sameEmail;
+      });
+
+      if (nextUsers.length === users.length) {
+        throw new Error("Could not find this user in Firebase.");
+      }
+
+      await saveUsers(firebase, nextUsers);
+      window.location.reload();
+    } catch (error) {
+      console.error("User delete failed", error);
+      alert("Could not delete user: " + error.message);
+      button.disabled = false;
+      button.textContent = "🗑️";
+    }
+  }
+
+  function enhanceUserManagementRows() {
+    document.querySelectorAll("table tbody tr").forEach(function (row) {
+      var info = getUserInfoFromAdminRow(row);
+      if (!info) return;
+
+      var linkedCell = row.querySelectorAll("td")[3];
+      var cachedUser = findCachedUserByAdminInfo(info);
+      if (linkedCell && cachedUser && isGuestEmpId(cachedUser.empId) && linkedCell.textContent !== GUEST_EMPLOYEE_LABEL) {
+        linkedCell.textContent = GUEST_EMPLOYEE_LABEL;
+        linkedCell.classList.add("nasama-guest-linked-cell");
+      }
+
+      var actions = row.querySelector("td:last-child div");
+      if (!actions) return;
+
+      var nativeButtons = actions.querySelectorAll("button:not([data-nasama-user-action])");
+      if (nativeButtons.length >= 3) {
+        nativeButtons[2].classList.add("nasama-native-status-btn");
+        nativeButtons[2].style.display = "none";
+      }
+
+      var neededActions = info.status === "active" ? "disable" : info.status === "disabled" ? "enable,delete" : "";
+      var currentActions = Array.prototype.map
+        .call(actions.querySelectorAll("[data-nasama-user-action]"), function (button) {
+          return button.getAttribute("data-nasama-user-action") || "";
+        })
+        .join(",");
+      if (currentActions === neededActions) return;
+
+      actions.querySelectorAll("[data-nasama-user-action]").forEach(function (button) {
+        button.remove();
+      });
+
+      if (info.status === "active") {
+        var disableButton = document.createElement("button");
+        disableButton.type = "button";
+        disableButton.className = "btn btn-ghost btn-sm nasama-user-status-btn danger";
+        disableButton.setAttribute("data-nasama-user-action", "disable");
+        disableButton.title = "Disable user login";
+        disableButton.textContent = "Disable";
+        actions.appendChild(disableButton);
+        return;
+      }
+
+      if (info.status === "disabled") {
+        var enableButton = document.createElement("button");
+        enableButton.type = "button";
+        enableButton.className = "btn btn-ghost btn-sm nasama-user-status-btn success";
+        enableButton.setAttribute("data-nasama-user-action", "enable");
+        enableButton.title = "Enable user login";
+        enableButton.textContent = "Enable";
+        actions.appendChild(enableButton);
+
+        var deleteButton = document.createElement("button");
+        deleteButton.type = "button";
+        deleteButton.className = "btn btn-ghost btn-sm nasama-delete-user-btn";
+        deleteButton.setAttribute("data-nasama-user-action", "delete");
+        deleteButton.title = "Delete disabled user";
+        deleteButton.textContent = "Delete";
+        actions.appendChild(deleteButton);
+      }
+    });
+  }
+
+  function enhanceLinkedEmployeeSelects() {
+    document.querySelectorAll("select").forEach(function (select) {
+      var options = Array.prototype.slice.call(select.options || []);
+      var looksLikeEmployeeSelect = options.some(function (option) {
+        return /select employee/i.test(option.textContent || "");
+      });
+      if (!looksLikeEmployeeSelect || options.some(function (option) { return option.value === GUEST_EMPLOYEE_ID; })) return;
+
+      var option = document.createElement("option");
+      option.value = GUEST_EMPLOYEE_ID;
+      option.textContent = GUEST_EMPLOYEE_LABEL;
+      select.insertBefore(option, select.options.length > 1 ? select.options[1] : null);
+    });
+  }
+
+  function getSession() {
+    try {
+      return JSON.parse(localStorage.getItem(SESSION_KEY) || "null");
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function enhanceGuestPortal() {
+    var session = getSession();
+    if (!session || !session.guest || session.empId !== GUEST_EMPLOYEE_ID) return;
+
+    var content = document.querySelector(".content");
+    if (!content || content.querySelector(".nasama-guest-portal")) return;
+    if ((content.textContent || "").indexOf("Page not found") === -1) return;
+
+    content.innerHTML =
+      '<div class="card nasama-guest-portal">' +
+      '<div class="card-header"><span class="card-title">Guest Access</span></div>' +
+      '<div class="card-body">' +
+      '<p>This account is active as a guest. It is not linked to an employee profile.</p>' +
+      '<p>Please ask admin to link an employee later if salary, attendance, leave, or payslip access is needed.</p>' +
+      '</div>' +
+      '</div>';
+  }
+
   function findSignInButton() {
     return Array.prototype.find.call(document.querySelectorAll("button"), function (button) {
       if (button.closest(".nasama-auth-extra")) return false;
@@ -395,20 +597,115 @@
     }, 120);
   });
 
-  var observer = new MutationObserver(injectButtons);
+  document.addEventListener("click", function (event) {
+    var button = event.target && event.target.closest ? event.target.closest("button") : null;
+    if (!button || (button.textContent || "").indexOf("🚫") === -1) return;
+    var row = button.closest("tr");
+    var info = getUserInfoFromAdminRow(row);
+    if (!info || info.status !== "active") return;
+
+    setTimeout(function () {
+      setUserActiveFromAdminRow(row, button, false);
+    }, 120);
+  });
+
+  document.addEventListener(
+    "click",
+    function (event) {
+      var button = event.target && event.target.closest ? event.target.closest("button") : null;
+      if (!button) return;
+
+      var text = button.textContent || "";
+      if (text.indexOf("🚫") === -1 && text.indexOf("✅") === -1) return;
+
+      var row = button.closest("tr");
+      var info = getUserInfoFromAdminRow(row);
+      if (!info) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+
+      if (text.indexOf("🚫") !== -1 && info.status === "active") {
+        setUserActiveFromAdminRow(row, button, false);
+        return;
+      }
+
+      if (text.indexOf("✅") !== -1 && info.status === "disabled") {
+        activateUserFromAdminRow(row, button);
+      }
+    },
+    true
+  );
+
+  document.addEventListener(
+    "click",
+    function (event) {
+      var button = event.target && event.target.closest ? event.target.closest("[data-nasama-user-action]") : null;
+      if (!button) return;
+
+      var action = button.getAttribute("data-nasama-user-action");
+      var row = button.closest("tr");
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+
+      if (action === "disable") {
+        setUserActiveFromAdminRow(row, button, false);
+        return;
+      }
+
+      if (action === "enable") {
+        setUserActiveFromAdminRow(row, button, true);
+        return;
+      }
+
+      if (action === "delete") {
+        deleteUserFromAdminRow(row, button);
+      }
+    },
+    true
+  );
+
+  document.addEventListener("click", function (event) {
+    var button = event.target && event.target.closest ? event.target.closest(".nasama-delete-user-btn") : null;
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    deleteUserFromAdminRow(button.closest("tr"), button);
+  });
+
+  function enhanceDynamicUi() {
+    injectButtons();
+    enhanceUserManagementRows();
+    enhanceLinkedEmployeeSelects();
+    enhanceGuestPortal();
+  }
+
+  var observer = new MutationObserver(function () {
+    injectButtons();
+    enhanceLinkedEmployeeSelects();
+    enhanceGuestPortal();
+  });
   observer.observe(document.documentElement, { childList: true, subtree: true });
+  var userObserver = new MutationObserver(function () {
+    enhanceUserManagementRows();
+    enhanceLinkedEmployeeSelects();
+    enhanceGuestPortal();
+  });
+  userObserver.observe(document.documentElement, { childList: true, subtree: true });
   var fallbackAttempts = 0;
   var fallbackTimer = setInterval(function () {
     fallbackAttempts += 1;
-    injectButtons();
+    enhanceDynamicUi();
     if (injected || fallbackAttempts >= 40) {
       clearInterval(fallbackTimer);
     }
   }, 250);
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", injectButtons);
+    document.addEventListener("DOMContentLoaded", enhanceDynamicUi);
   } else {
-    injectButtons();
+    enhanceDynamicUi();
   }
 })();

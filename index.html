@@ -7,7 +7,7 @@
     <title>Nasama HR - Real Estate Dubai</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-    <script type="module" crossorigin src="./assets/index-BzPFVSZp.js"></script>
+    <script type="module" crossorigin src="./assets/index-D7nUzaWs.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-B50lC15H.css">
     <link rel="stylesheet" href="./assets/receipt-report-overrides.css">
     <link rel="stylesheet" href="./assets/google-auth-flow.css?v=20260417-4">
@@ -42,10 +42,10 @@
 
       function matchesNav(text, label) {
         if (!text || !label) return false;
-        text = text.trim();
-        return text === label ||
-               text.endsWith(label) ||
-               text.replace(/[^\w\s]/g, '').trim() === label;
+        // Strip leading emoji/symbols then compare case-insensitively
+        var cleaned = text.trim().replace(/^[\s\S]*?([A-Za-z].*)$/, '$1').trim().toLowerCase();
+        var target  = label.toLowerCase();
+        return cleaned === target || cleaned.endsWith(' ' + target);
       }
 
       function patchSidebar() {
@@ -97,15 +97,13 @@
 
         var observer = new MutationObserver(function() {
           clearTimeout(observer._timer);
-          observer._timer = setTimeout(runPatches, 16);
+          observer._timer = setTimeout(runPatches, 60);
         });
 
         observer.observe(document.body, {
           childList: true,
           subtree: true
         });
-
-        setInterval(runPatches, 500);
       }
 
       if (document.readyState === 'loading') {

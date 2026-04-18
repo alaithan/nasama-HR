@@ -7,7 +7,7 @@
     <title>Nasama HR - Real Estate Dubai</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-    <script type="module" crossorigin src="./assets/index-B4TNkpym.js"></script>
+    <script type="module" crossorigin src="./assets/index-BaDHkon4.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-B50lC15H.css">
     <link rel="stylesheet" href="./assets/receipt-report-overrides.css">
     <link rel="stylesheet" href="./assets/google-auth-flow.css?v=20260417-4">
@@ -27,8 +27,11 @@
       var BLOCKED_PAGES  = ['Dashboard', 'Reports'];
       var REDIRECT_LABEL = 'Employees';
       var _roleCache     = null;
+      var _hrRedirecting = false;
+      var _observerTimer = null;
 
       // Cache the role so localStorage is not parsed on every MutationObserver tick.
+      // Invalidate on storage change (logout / role switch without page reload).
       function getRole() {
         if (_roleCache !== null) return _roleCache;
         try {
@@ -39,6 +42,10 @@
           return _roleCache;
         } catch(e) { _roleCache = ''; return ''; }
       }
+
+      window.addEventListener('storage', function(e) {
+        if (e.key === SESSION_KEY) { _roleCache = null; runPatches(); }
+      });
 
       function isBlocked() {
         return getRole() === BLOCKED_ROLE;
@@ -81,13 +88,13 @@
           if (matchesNav(current, BLOCKED_PAGES[j])) { onBlockedPage = true; break; }
         }
         if (!onBlockedPage) return;
-        if (window._hrRedirecting) return;
+        if (_hrRedirecting) return;
 
         for (var i = 0; i < navItems.length; i++) {
           if (matchesNav(navItems[i].textContent, REDIRECT_LABEL)) {
-            window._hrRedirecting = true;
+            _hrRedirecting = true;
             navItems[i].click();
-            setTimeout(function() { window._hrRedirecting = false; }, 600);
+            setTimeout(function() { _hrRedirecting = false; }, 600);
             return;
           }
         }
@@ -104,8 +111,8 @@
         if (!document.body) { setTimeout(startObserver, 50); return; }
         runPatches();
         var observer = new MutationObserver(function() {
-          clearTimeout(observer._timer);
-          observer._timer = setTimeout(runPatches, 60);
+          clearTimeout(_observerTimer);
+          _observerTimer = setTimeout(runPatches, 60);
         });
         observer.observe(document.body, { childList: true, subtree: true });
       }

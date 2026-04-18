@@ -69,7 +69,7 @@
 
         var onBlockedPage = false;
         for (var j = 0; j < BLOCKED_PAGES.length; j++) {
-          if (current === BLOCKED_PAGES[j]) { onBlockedPage = true; break; }
+          if (matchesNav(current, BLOCKED_PAGES[j])) { onBlockedPage = true; break; }
         }
         if (!onBlockedPage) return;
 

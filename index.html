@@ -22,8 +22,8 @@
     (function() {
       'use strict';
 
-      var SESSION_KEY = 'nasama_hr_session';
-      var BLOCKED_ROLE = 'hr_officer';
+      var SESSION_KEY   = 'nasama_hr_session';
+      var BLOCKED_ROLE  = 'hr_officer';
       var BLOCKED_PAGES = ['Dashboard', 'Reports'];
       var REDIRECT_LABEL = 'Employees';
 
@@ -40,17 +40,21 @@
         return getRole() === BLOCKED_ROLE;
       }
 
+      // Strip leading emoji/symbols, then compare case-insensitively.
+      // Falls back to the full trimmed string if no Latin letter is found
+      // (icon-only nav items), so the comparison still works rather than breaking.
       function matchesNav(text, label) {
         if (!text || !label) return false;
-        // Strip leading emoji/symbols then compare case-insensitively
-        var cleaned = text.trim().replace(/^[\s\S]*?([A-Za-z].*)$/, '$1').trim().toLowerCase();
-        var target  = label.toLowerCase();
+        var stripped = text.trim().replace(/^[^A-Za-z0-9]*/, '').trim();
+        var cleaned  = (stripped || text.trim()).toLowerCase();
+        var target   = label.toLowerCase();
         return cleaned === target || cleaned.endsWith(' ' + target);
       }
 
-      function patchSidebar() {
+      // Hide blocked nav items. Accepts a pre-queried NodeList to avoid
+      // redundant DOM queries when called from runPatches.
+      function patchSidebar(navItems) {
         if (!isBlocked()) return;
-        var navItems = document.querySelectorAll('.nav-item');
         for (var i = 0; i < navItems.length; i++) {
           var text = navItems[i].textContent.trim();
           for (var j = 0; j < BLOCKED_PAGES.length; j++) {
@@ -61,7 +65,9 @@
         }
       }
 
-      function patchPageAccess() {
+      // Redirect away from blocked pages. Guards against click-loop by
+      // ignoring re-entrant calls while a redirect is already in flight.
+      function patchPageAccess(navItems) {
         if (!isBlocked()) return;
         var pageTitle = document.querySelector('.page-title');
         if (!pageTitle) return;
@@ -72,19 +78,23 @@
           if (matchesNav(current, BLOCKED_PAGES[j])) { onBlockedPage = true; break; }
         }
         if (!onBlockedPage) return;
+        if (window._hrRedirecting) return;
 
-        var navItems = document.querySelectorAll('.nav-item');
         for (var i = 0; i < navItems.length; i++) {
           if (matchesNav(navItems[i].textContent, REDIRECT_LABEL)) {
+            window._hrRedirecting = true;
             navItems[i].click();
+            setTimeout(function() { window._hrRedirecting = false; }, 600);
             return;
           }
         }
       }
 
+      // Single DOM query shared by both patch functions.
       function runPatches() {
-        patchSidebar();
-        patchPageAccess();
+        var navItems = document.querySelectorAll('.nav-item');
+        patchSidebar(navItems);
+        patchPageAccess(navItems);
       }
 
       function startObserver() {

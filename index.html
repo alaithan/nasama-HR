@@ -22,37 +22,40 @@
     (function() {
       'use strict';
 
-      var SESSION_KEY   = 'nasama_hr_session';
-      var BLOCKED_ROLE  = 'hr_officer';
-      var BLOCKED_PAGES = ['Dashboard', 'Reports'];
+      var SESSION_KEY    = 'nasama_hr_session';
+      var BLOCKED_ROLE   = 'hr_officer';
+      var BLOCKED_PAGES  = ['Dashboard', 'Reports'];
       var REDIRECT_LABEL = 'Employees';
+      var _roleCache     = null;
 
+      // Cache the role so localStorage is not parsed on every MutationObserver tick.
       function getRole() {
+        if (_roleCache !== null) return _roleCache;
         try {
           var raw = localStorage.getItem(SESSION_KEY);
-          if (!raw) return null;
+          if (!raw) { _roleCache = ''; return ''; }
           var session = JSON.parse(raw);
-          return session && session.role ? session.role : null;
-        } catch(e) { return null; }
+          _roleCache = (session && session.role) ? session.role : '';
+          return _roleCache;
+        } catch(e) { _roleCache = ''; return ''; }
       }
 
       function isBlocked() {
         return getRole() === BLOCKED_ROLE;
       }
 
-      // Strip leading emoji/symbols, then compare case-insensitively.
-      // Falls back to the full trimmed string if no Latin letter is found
-      // (icon-only nav items), so the comparison still works rather than breaking.
+      // Strip leading emoji/symbols before comparing.
+      // Falls back to the full trimmed string when no Latin letter exists
+      // (icon-only items) so matching never silently breaks.
       function matchesNav(text, label) {
         if (!text || !label) return false;
         var stripped = text.trim().replace(/^[^A-Za-z0-9]*/, '').trim();
-        var cleaned  = (stripped || text.trim()).toLowerCase();
+        var cleaned  = (stripped.length ? stripped : text.trim()).toLowerCase();
         var target   = label.toLowerCase();
         return cleaned === target || cleaned.endsWith(' ' + target);
       }
 
-      // Hide blocked nav items. Accepts a pre-queried NodeList to avoid
-      // redundant DOM queries when called from runPatches.
+      // Hide blocked nav items. Receives the pre-queried NodeList from runPatches.
       function patchSidebar(navItems) {
         if (!isBlocked()) return;
         for (var i = 0; i < navItems.length; i++) {
@@ -65,8 +68,8 @@
         }
       }
 
-      // Redirect away from blocked pages. Guards against click-loop by
-      // ignoring re-entrant calls while a redirect is already in flight.
+      // Redirect away from blocked pages.
+      // window._hrRedirecting prevents a click-loop while the SPA router catches up.
       function patchPageAccess(navItems) {
         if (!isBlocked()) return;
         var pageTitle = document.querySelector('.page-title');
@@ -98,22 +101,13 @@
       }
 
       function startObserver() {
-        if (!document.body) {
-          setTimeout(startObserver, 50);
-          return;
-        }
-
+        if (!document.body) { setTimeout(startObserver, 50); return; }
         runPatches();
-
         var observer = new MutationObserver(function() {
           clearTimeout(observer._timer);
           observer._timer = setTimeout(runPatches, 60);
         });
-
-        observer.observe(document.body, {
-          childList: true,
-          subtree: true
-        });
+        observer.observe(document.body, { childList: true, subtree: true });
       }
 
       if (document.readyState === 'loading') {

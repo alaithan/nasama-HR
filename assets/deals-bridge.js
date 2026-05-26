@@ -295,11 +295,16 @@
     });
   }
 
-  // React controlled inputs ignore input.value = x. Use the native setter so React
-  // sees the change and updates its internal state (prevents "field is required" on submit).
+  // React tracks the last-seen DOM value in input._valueTracker.
+  // If we set input.value directly, React compares new === last and suppresses the event.
+  // Fix: overwrite _valueTracker's cached value with the OLD value first, then dispatch —
+  // React now sees a real change and updates its internal state properly.
   var _nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
   function setReactInput(input, value) {
+    var prev = input.value;
     _nativeSetter.call(input, value);
+    var tracker = input._valueTracker;
+    if (tracker) tracker.setValue(prev);
     input.dispatchEvent(new Event('input',  { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
   }

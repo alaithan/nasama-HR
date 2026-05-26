@@ -295,18 +295,36 @@
     });
   }
 
-  // React tracks the last-seen DOM value in input._valueTracker.
-  // If we set input.value directly, React compares new === last and suppresses the event.
-  // Fix: overwrite _valueTracker's cached value with the OLD value first, then dispatch —
-  // React now sees a real change and updates its internal state properly.
   var _nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+
+  // Calls React's own onChange handler directly via the element's __reactFiber key.
+  // This is the only reliable way to update a controlled input's state from outside React —
+  // DOM events alone get suppressed or overwritten on re-render.
   function setReactInput(input, value) {
-    var prev = input.value;
     _nativeSetter.call(input, value);
-    var tracker = input._valueTracker;
-    if (tracker) tracker.setValue(prev);
-    input.dispatchEvent(new Event('input',  { bubbles: true }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
+
+    // Find the fiber key (format changes across React versions)
+    var fiberKey = Object.keys(input).find(function (k) {
+      return k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance');
+    });
+    var handled = false;
+    if (fiberKey) {
+      var props = input[fiberKey] && input[fiberKey].memoizedProps;
+      if (props && typeof props.onChange === 'function') {
+        props.onChange({
+          target: input, currentTarget: input, type: 'change', bubbles: true,
+          preventDefault: function () {}, stopPropagation: function () {}
+        });
+        handled = true;
+      }
+    }
+    if (!handled) {
+      // Fallback: reset _valueTracker so React sees the value as changed
+      var tracker = input._valueTracker;
+      if (tracker) tracker.setValue('');
+      input.dispatchEvent(new Event('input',  { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
   }
 
   function fillCommForm(deal) {
@@ -317,7 +335,11 @@
           (deal._id ? ' [' + deal._id + ']' : '') },
       { match: 'Client Name',      value: deal.client_name || '' },
       { match: 'Property / Area',  value: deal.developer || ''   },
-      { match: 'Transaction Date', value: deal.created_at || ''  },
+      { match: 'Transaction Date', value: (function (v) {
+          if (!v) return '';
+          if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+          var d = new Date(v); return isNaN(d) ? '' : d.toISOString().split('T')[0];
+        })(deal.created_at) },
     ];
 
     document.querySelectorAll('.form-group').forEach(function (g) {

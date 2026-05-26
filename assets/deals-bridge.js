@@ -113,10 +113,9 @@
     }
   }
 
-  // transaction_value is stored in direct AED in the accounting app
-  function dealComm(d) {
-    return (parseFloat(d.transaction_value) || 0) * ((parseFloat(d.commission_pct) || 0) / 100);
-  }
+  // transaction_value is stored in fils (×100 of AED) in the accounting app
+  function txAed(d) { return (parseFloat(d.transaction_value) || 0) / 100; }
+  function dealComm(d) { return txAed(d) * ((parseFloat(d.commission_pct) || 0) / 100); }
 
   function isCollected(d) { return d.stage === 'Commission Collected'; }
   function isActive(d) { return d.stage !== 'Cancelled'; }
@@ -296,15 +295,24 @@
     });
   }
 
+  // React controlled inputs ignore input.value = x. Use the native setter so React
+  // sees the change and updates its internal state (prevents "field is required" on submit).
+  var _nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+  function setReactInput(input, value) {
+    _nativeSetter.call(input, value);
+    input.dispatchEvent(new Event('input',  { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
   function fillCommForm(deal) {
     // Use includes() matching so asterisks and casing variations don't matter
     var fills = [
       { match: 'Deal Reference', value: (deal.property_name || deal.unit_no || '') +
           (deal.unit_no && deal.property_name ? ' — ' + deal.unit_no : '') +
-          (deal._id ? ' [' + deal._id + ']' : ''), type: 'text' },
-      { match: 'Client Name',      value: deal.client_name || '',  type: 'text' },
-      { match: 'Property / Area',  value: deal.developer || '',    type: 'text' },
-      { match: 'Transaction Date', value: deal.created_at || '',   type: 'date' },
+          (deal._id ? ' [' + deal._id + ']' : '') },
+      { match: 'Client Name',      value: deal.client_name || '' },
+      { match: 'Property / Area',  value: deal.developer || ''   },
+      { match: 'Transaction Date', value: deal.created_at || ''  },
     ];
 
     document.querySelectorAll('.form-group').forEach(function (g) {
@@ -313,11 +321,7 @@
       if (!label || !input) return;
       var text = (label.textContent || '').trim();
       fills.forEach(function (f) {
-        if (text.includes(f.match) && f.value !== '') {
-          input.value = f.value;
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-          input.dispatchEvent(new Event('change', { bubbles: true }));
-        }
+        if (text.includes(f.match) && f.value !== '') setReactInput(input, f.value);
       });
     });
 
@@ -325,7 +329,7 @@
     var old = document.getElementById('nd-deal-value-row');
     if (old) old.remove();
 
-    var txVal = parseFloat(deal.transaction_value);
+    var txVal = txAed(deal);
     if (!txVal) return;
 
     var dealGroup = null;

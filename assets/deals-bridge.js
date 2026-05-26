@@ -335,11 +335,6 @@
           (deal._id ? ' [' + deal._id + ']' : '') },
       { match: 'Client Name',      value: deal.client_name || '' },
       { match: 'Property / Area',  value: deal.developer || ''   },
-      { match: 'Transaction Date', value: (function (v) {
-          if (!v) return '';
-          if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
-          var d = new Date(v); return isNaN(d) ? '' : d.toISOString().split('T')[0];
-        })(deal.created_at) },
     ];
 
     document.querySelectorAll('.form-group').forEach(function (g) {

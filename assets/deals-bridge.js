@@ -195,21 +195,23 @@
   // When a deal is selected every field is filled automatically — no double entry.
 
   async function injectCommForm() {
-    var titleEl = null;
-    document.querySelectorAll('*').forEach(function (el) {
-      if (el.children.length || el.id === 'nd-perf-card') return;
-      var t = (el.textContent || '').trim();
-      if (t === 'New Commission Entry' || t === 'Edit Commission Record') titleEl = el;
+    // Detect the commission modal by its title text (leaf node)
+    var inModal = false;
+    document.querySelectorAll('div,span,h1,h2,h3,h4').forEach(function (el) {
+      if (!el.children.length) {
+        var t = (el.textContent || '').trim();
+        if (t === 'New Commission Entry' || t === 'Edit Commission Record') inModal = true;
+      }
     });
-    if (!titleEl) { commFormDone = false; return; }
-    if (commFormDone) return;
+    if (!inModal) { commFormDone = false; return; }
+    if (commFormDone || document.querySelector('.nd-import-btn')) { commFormDone = true; return; }
 
-    var modal = titleEl.closest('[class]');
-    if (!modal || modal.querySelector('.nd-import-btn')) return;
-
+    // Find the Deal Reference form group (document-level — no fragile modal-container lookup)
     var dealGroup = null;
-    modal.querySelectorAll('label').forEach(function (l) {
-      if ((l.textContent || '').includes('Deal Reference')) dealGroup = l.closest('.form-group');
+    document.querySelectorAll('.form-group label').forEach(function (l) {
+      if (!dealGroup && (l.textContent || '').includes('Deal Reference')) {
+        dealGroup = l.closest('.form-group');
+      }
     });
     if (!dealGroup) return;
 
@@ -227,7 +229,15 @@
     dealGroup.appendChild(btn);
 
     btn.addEventListener('click', async function () {
-      var brokerSelect = modal.querySelector('select');
+      // Find broker select via its label — more robust than positional index
+      var brokerSelect = null;
+      document.querySelectorAll('.form-group').forEach(function (g) {
+        if (brokerSelect) return;
+        var lbl = g.querySelector('label');
+        if (lbl && (lbl.textContent || '').trim().startsWith('Broker')) {
+          brokerSelect = g.querySelector('select');
+        }
+      });
       var empId = brokerSelect ? brokerSelect.value : '';
       if (!empId) { alert('Select a broker first.'); return; }
 
@@ -244,37 +254,35 @@
       btn.querySelector('span:last-child').textContent = 'Import from Accounting Deals';
       btn.disabled = false;
 
-      showDealPicker(btn, deals, function (deal) { fillCommForm(modal, deal); });
+      showDealPicker(btn, deals, function (deal) { fillCommForm(deal); });
     });
   }
 
-  function fillCommForm(modal, deal) {
+  function fillCommForm(deal) {
     var comm = dealComm(deal);
-    var fieldMap = {
-      'Deal Reference': (deal.property_name || deal.unit_no || '') +
-        (deal.unit_no && deal.property_name ? ' — ' + deal.unit_no : '') +
-        (deal._id ? ' [' + deal._id + ']' : ''),
-      'Client Name': deal.client_name || '',
-      'Property / Area': deal.developer || '',
-      'Total Commission (AED)': Math.round(comm) || ''
-    };
+    // Use includes() matching so asterisks and casing variations don't matter
+    var fills = [
+      { match: 'Deal Reference', value: (deal.property_name || deal.unit_no || '') +
+          (deal.unit_no && deal.property_name ? ' — ' + deal.unit_no : '') +
+          (deal._id ? ' [' + deal._id + ']' : ''), type: 'text' },
+      { match: 'Client Name',         value: deal.client_name || '',   type: 'text' },
+      { match: 'Property / Area',     value: deal.developer || '',     type: 'text' },
+      { match: 'Total Commission',    value: Math.round(comm) || '',   type: 'number' },
+      { match: 'Transaction Date',    value: deal.created_at || '',    type: 'date' },
+    ];
 
-    modal.querySelectorAll('.form-group').forEach(function (g) {
+    document.querySelectorAll('.form-group').forEach(function (g) {
       var label = g.querySelector('label');
       var input = g.querySelector('input');
       if (!label || !input) return;
       var text = (label.textContent || '').trim();
-
-      if (Object.prototype.hasOwnProperty.call(fieldMap, text)) {
-        input.value = fieldMap[text];
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-      }
-      if (text.includes('Transaction Date') && deal.created_at) {
-        input.value = deal.created_at;
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-      }
+      fills.forEach(function (f) {
+        if (text.includes(f.match) && f.value !== '') {
+          input.value = f.value;
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      });
     });
   }
 

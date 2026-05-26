@@ -94,7 +94,17 @@
           if (matchesNav(navItems[i].textContent, REDIRECT_LABEL)) {
             _hrRedirecting = true;
             navItems[i].click();
-            setTimeout(function() { _hrRedirecting = false; }, 600);
+            var _redirectCheck = setInterval(function() {
+              var pt = document.querySelector('.page-title');
+              if (!pt) return;
+              var cur = pt.textContent.trim();
+              var stillBlocked = false;
+              for (var k = 0; k < BLOCKED_PAGES.length; k++) {
+                if (matchesNav(cur, BLOCKED_PAGES[k])) { stillBlocked = true; break; }
+              }
+              if (!stillBlocked) { clearInterval(_redirectCheck); _hrRedirecting = false; }
+            }, 100);
+            setTimeout(function() { clearInterval(_redirectCheck); _hrRedirecting = false; }, 3000);
             return;
           }
         }

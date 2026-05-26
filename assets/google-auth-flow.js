@@ -130,6 +130,30 @@
     saveUsersCache(users);
   }
 
+  // Atomically read-modify-write the users list via a Firebase transaction.
+  // mutateFn(users, markChanged) must call markChanged() if it modifies any user,
+  // and return the new users array. Returning without calling markChanged aborts.
+  function transactUsers(firebase, mutateFn) {
+    return new Promise(function (resolve, reject) {
+      firebase.database().ref(ROOT_PATH + "/users").transaction(
+        function (current) {
+          var users = normalizeUsers(current);
+          var changed = false;
+          var next = mutateFn(users, function () { changed = true; });
+          return changed ? next : undefined;
+        },
+        function (error, committed, snapshot) {
+          if (error) return reject(error);
+          if (!committed) return reject(new Error("Could not find this user in Firebase."));
+          var users = normalizeUsers(snapshot ? snapshot.val() : []);
+          saveUsersCache(users);
+          resolve(users);
+        },
+        false
+      );
+    });
+  }
+
   async function signInWithGoogle() {
     var firebase = initFirebase();
     var provider = new firebase.auth.GoogleAuthProvider();
@@ -306,12 +330,23 @@
   }
 
   function getUserInfoFromAdminRow(row) {
-    var cells = row ? row.querySelectorAll("td") : [];
+    if (!row) return null;
+    var cells = row.querySelectorAll("td");
     if (cells.length < 5) return null;
-    var idMatch = (cells[0].textContent || "").match(/USR[A-Z0-9]+/i);
+    var id, email;
+    if (row.dataset.nasamaUserId) {
+      id = row.dataset.nasamaUserId;
+      email = row.dataset.nasamaUserEmail || "";
+    } else {
+      var idMatch = (cells[0].textContent || "").match(/USR[A-Z0-9]+/i);
+      id = idMatch ? idMatch[0].toUpperCase() : "";
+      email = (cells[1].textContent || "").trim().toLowerCase();
+      if (id) row.dataset.nasamaUserId = id;
+      if (email) row.dataset.nasamaUserEmail = email;
+    }
     return {
-      id: idMatch ? idMatch[0].toUpperCase() : "",
-      email: (cells[1].textContent || "").trim().toLowerCase(),
+      id: id,
+      email: email,
       status: (cells[4].textContent || "").trim().toLowerCase()
     };
   }
@@ -325,30 +360,26 @@
       button.textContent = "...";
 
       var firebase = initFirebase();
-      var users = await loadUsers(firebase);
       var employees = await loadEmployees(firebase);
-      var changed = false;
-      var nextUsers = users.map(function (user) {
-        var sameId = info.id && String(user.id || "").toUpperCase() === info.id;
-        var sameEmail = info.email && String(user.email || "").trim().toLowerCase() === info.email;
-        if (!sameId && !sameEmail) return user;
-        var employee = user.empId ? null : findEmployeeByEmail(employees, user.email);
-        changed = true;
-        return Object.assign({}, user, {
-          active: true,
-          approvalStatus: "approved",
-          approvedAt: new Date().toISOString(),
-          empId: user.empId || (employee && employee.id) || "",
-          linkedByEmail: user.linkedByEmail || !!employee,
-          linkedAt: user.linkedAt || (employee ? new Date().toISOString() : "")
+
+      await transactUsers(firebase, function (users, markChanged) {
+        return users.map(function (user) {
+          var sameId = info.id && String(user.id || "").toUpperCase() === info.id;
+          var sameEmail = info.email && String(user.email || "").trim().toLowerCase() === info.email;
+          if (!sameId && !sameEmail) return user;
+          var employee = user.empId ? null : findEmployeeByEmail(employees, user.email);
+          markChanged();
+          return Object.assign({}, user, {
+            active: true,
+            approvalStatus: "approved",
+            approvedAt: new Date().toISOString(),
+            empId: user.empId || (employee && employee.id) || "",
+            linkedByEmail: user.linkedByEmail || !!employee,
+            linkedAt: user.linkedAt || (employee ? new Date().toISOString() : "")
+          });
         });
       });
 
-      if (!changed) {
-        throw new Error("Could not find this user in Firebase.");
-      }
-
-      await saveUsers(firebase, nextUsers);
       window.location.reload();
     } catch (error) {
       console.error("User activation failed", error);
@@ -367,26 +398,22 @@
       button.textContent = "...";
 
       var firebase = initFirebase();
-      var users = await loadUsers(firebase);
-      var changed = false;
-      var nextUsers = users.map(function (user) {
-        var sameId = info.id && String(user.id || "").toUpperCase() === info.id;
-        var sameEmail = info.email && String(user.email || "").trim().toLowerCase() === info.email;
-        if (!sameId && !sameEmail) return user;
-        changed = true;
-        return Object.assign({}, user, {
-          active: active,
-          approvalStatus: active ? "approved" : "disabled",
-          approvedAt: active ? user.approvedAt || new Date().toISOString() : user.approvedAt || "",
-          disabledAt: active ? "" : new Date().toISOString()
+
+      await transactUsers(firebase, function (users, markChanged) {
+        return users.map(function (user) {
+          var sameId = info.id && String(user.id || "").toUpperCase() === info.id;
+          var sameEmail = info.email && String(user.email || "").trim().toLowerCase() === info.email;
+          if (!sameId && !sameEmail) return user;
+          markChanged();
+          return Object.assign({}, user, {
+            active: active,
+            approvalStatus: active ? "approved" : "disabled",
+            approvedAt: active ? user.approvedAt || new Date().toISOString() : user.approvedAt || "",
+            disabledAt: active ? "" : new Date().toISOString()
+          });
         });
       });
 
-      if (!changed) {
-        throw new Error("Could not find this user in Firebase.");
-      }
-
-      await saveUsers(firebase, nextUsers);
       window.location.reload();
     } catch (error) {
       console.error("User status update failed", error);
@@ -410,18 +437,16 @@
       button.textContent = "...";
 
       var firebase = initFirebase();
-      var users = await loadUsers(firebase);
-      var nextUsers = users.filter(function (user) {
-        var sameId = info.id && String(user.id || "").toUpperCase() === info.id;
-        var sameEmail = info.email && String(user.email || "").trim().toLowerCase() === info.email;
-        return !sameId && !sameEmail;
+
+      await transactUsers(firebase, function (users, markChanged) {
+        return users.filter(function (user) {
+          var sameId = info.id && String(user.id || "").toUpperCase() === info.id;
+          var sameEmail = info.email && String(user.email || "").trim().toLowerCase() === info.email;
+          if (sameId || sameEmail) { markChanged(); return false; }
+          return true;
+        });
       });
 
-      if (nextUsers.length === users.length) {
-        throw new Error("Could not find this user in Firebase.");
-      }
-
-      await saveUsers(firebase, nextUsers);
       window.location.reload();
     } catch (error) {
       console.error("User delete failed", error);
@@ -583,30 +608,6 @@
     } else {
       handleGoogleSignIn();
     }
-  });
-
-  document.addEventListener("click", function (event) {
-    var button = event.target && event.target.closest ? event.target.closest("button") : null;
-    if (!button || (button.textContent || "").indexOf("✅") === -1) return;
-    var row = button.closest("tr");
-    var info = getUserInfoFromAdminRow(row);
-    if (!info || info.status !== "disabled") return;
-
-    setTimeout(function () {
-      activateUserFromAdminRow(row, button);
-    }, 120);
-  });
-
-  document.addEventListener("click", function (event) {
-    var button = event.target && event.target.closest ? event.target.closest("button") : null;
-    if (!button || (button.textContent || "").indexOf("🚫") === -1) return;
-    var row = button.closest("tr");
-    var info = getUserInfoFromAdminRow(row);
-    if (!info || info.status !== "active") return;
-
-    setTimeout(function () {
-      setUserActiveFromAdminRow(row, button, false);
-    }, 120);
   });
 
   document.addEventListener(

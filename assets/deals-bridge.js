@@ -305,7 +305,6 @@
           (deal._id ? ' [' + deal._id + ']' : ''), type: 'text' },
       { match: 'Client Name',         value: deal.client_name || '',   type: 'text' },
       { match: 'Property / Area',     value: deal.developer || '',     type: 'text' },
-      { match: 'Total Commission',    value: Math.round(comm) || '',   type: 'number' },
       { match: 'Transaction Date',    value: deal.created_at || '',    type: 'date' },
     ];
 

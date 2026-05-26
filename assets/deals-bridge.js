@@ -92,6 +92,27 @@
     }
   }
 
+  async function fetchAllDealsYTD(year) {
+    if (!acctDb) return [];
+    var key = 'all-' + year + '-ytd';
+    var hit = dealsCache[key];
+    if (hit && Date.now() - hit.ts < CACHE_TTL) return hit.data;
+    try {
+      var snap = await acctDb.collection('deals')
+        .where('created_at', '>=', year + '-01-01')
+        .where('created_at', '<=', year + '-12-31')
+        .get();
+      var data = [];
+      snap.forEach(function (d) { data.push(Object.assign({ _id: d.id }, d.data())); });
+      data.sort(function (a, b) { return (b.created_at || '') < (a.created_at || '') ? -1 : 1; });
+      dealsCache[key] = { data: data, ts: Date.now() };
+      return data;
+    } catch (e) {
+      console.warn('[NasamaDeals] fetchAllDealsYTD:', e.message);
+      return [];
+    }
+  }
+
   // transaction_value is stored in direct AED in the accounting app
   function dealComm(d) {
     return (parseFloat(d.transaction_value) || 0) * ((parseFloat(d.commission_pct) || 0) / 100);
@@ -241,20 +262,37 @@
       var empId = brokerSelect ? brokerSelect.value : '';
       if (!empId) { alert('Select a broker first.'); return; }
 
-      var brokerId = await brokerIdFor(empId);
-      if (!brokerId) { showLinkPopup(empId, btn); return; }
-
       btn.querySelector('span:last-child').textContent = 'Loading…';
       btn.disabled = true;
 
+      var brokerId = await brokerIdFor(empId);
+      var showAll = !brokerId;
       var now = new Date();
-      var deals = await fetchDealsYTD(brokerId, now.getFullYear());
-      if (!deals.length) deals = await fetchDealsYTD(brokerId, now.getFullYear() - 1);
+      var deals;
+
+      if (brokerId) {
+        deals = await fetchDealsYTD(brokerId, now.getFullYear());
+        if (!deals.length) deals = await fetchDealsYTD(brokerId, now.getFullYear() - 1);
+      } else {
+        // No broker linked yet — show every deal so user can pick and optionally link
+        deals = await fetchAllDealsYTD(now.getFullYear());
+        if (!deals.length) deals = await fetchAllDealsYTD(now.getFullYear() - 1);
+      }
 
       btn.querySelector('span:last-child').textContent = 'Import from Accounting Deals';
       btn.disabled = false;
 
-      showDealPicker(btn, deals, function (deal) { fillCommForm(deal); });
+      showDealPicker(btn, deals, showAll, function (deal) {
+        fillCommForm(deal);
+        // Offer to save the broker link so future imports are pre-filtered
+        if (showAll && deal.broker_id) {
+          setTimeout(function () {
+            if (confirm('Save broker ID "' + deal.broker_id + '" for this employee?\nFuture imports will only show their deals.')) {
+              saveLink(empId, deal.broker_id);
+            }
+          }, 300);
+        }
+      });
     });
   }
 
@@ -286,7 +324,10 @@
     });
   }
 
-  function showDealPicker(anchor, deals, onPick) {
+  function showDealPicker(anchor, deals, showAll, onPick) {
+    // Support old 3-arg call signature
+    if (typeof showAll === 'function') { onPick = showAll; showAll = false; }
+
     var old = document.getElementById('nd-deal-picker');
     if (old) old.remove();
 
@@ -295,52 +336,88 @@
     box.style.cssText = [
       'position:fixed;z-index:100000;background:#fff;border-radius:12px',
       'box-shadow:0 8px 40px rgba(0,0,0,0.2);border:1px solid #e2e8f0',
-      'width:440px;max-height:440px;overflow:hidden;display:flex;flex-direction:column'
+      'width:480px;max-height:480px;overflow:hidden;display:flex;flex-direction:column'
     ].join(';');
 
     var r = anchor.getBoundingClientRect();
-    box.style.top = Math.min(r.bottom + 8, window.innerHeight - 460) + 'px';
-    box.style.left = Math.min(r.left, window.innerWidth - 460) + 'px';
+    box.style.top = Math.min(r.bottom + 8, window.innerHeight - 500) + 'px';
+    box.style.left = Math.min(r.left, window.innerWidth - 500) + 'px';
 
-    var rows = deals.length
-      ? deals.map(function (d) {
-          var comm = dealComm(d);
-          return '<div class="nd-deal-row" style="padding:10px 14px;border-bottom:1px solid #f1f5f9;cursor:pointer" data-id="' + d._id + '">' +
-            '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">' +
-              '<div style="flex:1;min-width:0">' +
-                '<div style="font-size:13px;font-weight:600;color:#0f172a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
-                  (d.property_name || d.unit_no || '—') + '</div>' +
-                '<div style="font-size:11px;color:#64748b;margin-top:2px">' +
-                  (d.client_name || '') + (d.created_at ? ' &nbsp;·&nbsp; ' + d.created_at : '') +
-                '</div>' +
-              '</div>' +
-              '<div style="text-align:right;flex-shrink:0">' +
-                '<div style="font-size:13px;font-weight:700;color:#0f172a;margin-bottom:3px">' + fmtAed(comm) + '</div>' +
-                badge(d.stage) +
-              '</div>' +
+    function buildRow(d) {
+      var comm = dealComm(d);
+      return '<div class="nd-deal-row" style="padding:10px 14px;border-bottom:1px solid #f1f5f9;cursor:pointer" data-id="' + d._id + '">' +
+        '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">' +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-size:13px;font-weight:600;color:#0f172a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+              (d.property_name || d.unit_no || '—') + '</div>' +
+            '<div style="font-size:11px;color:#64748b;margin-top:2px">' +
+              (d.client_name || '') +
+              (d.created_at ? ' &nbsp;·&nbsp; ' + d.created_at : '') +
+              (showAll && d.broker_id ? ' &nbsp;·&nbsp; <span style="color:#3b82f6;font-weight:700">' + d.broker_id + '</span>' : '') +
             '</div>' +
-          '</div>';
-        }).join('')
-      : '<div style="padding:28px;text-align:center;color:#94a3b8;font-size:13px">No deals found in the accounting system</div>';
+          '</div>' +
+          '<div style="text-align:right;flex-shrink:0">' +
+            '<div style="font-size:13px;font-weight:700;color:#0f172a;margin-bottom:3px">' + fmtAed(comm) + '</div>' +
+            badge(d.stage) +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    }
+
+    function renderRows(q) {
+      var list = q
+        ? deals.filter(function (d) {
+            var lq = q.toLowerCase();
+            return (d.property_name || '').toLowerCase().includes(lq) ||
+                   (d.client_name || '').toLowerCase().includes(lq) ||
+                   (d.broker_id || '').toLowerCase().includes(lq) ||
+                   (d.unit_no || '').toLowerCase().includes(lq);
+          })
+        : deals;
+      if (!list.length) {
+        return '<div style="padding:28px;text-align:center;color:#94a3b8;font-size:13px">No deals match your search</div>';
+      }
+      return list.map(buildRow).join('');
+    }
+
+    var searchHint = showAll ? 'Search by property, client, or broker ID…' : 'Search by property or client…';
 
     box.innerHTML =
       '<div style="padding:12px 14px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;flex-shrink:0">' +
-        '<span style="font-size:13px;font-weight:700;color:#0f172a">Select Deal to Import</span>' +
+        '<span style="font-size:13px;font-weight:700;color:#0f172a">Select Deal to Import' +
+          (showAll ? ' <span style="font-size:11px;font-weight:400;color:#94a3b8">(all brokers)</span>' : '') +
+        '</span>' +
         '<button id="nd-picker-close" type="button" style="background:none;border:none;cursor:pointer;color:#94a3b8;font-size:18px;line-height:1;padding:0">✕</button>' +
       '</div>' +
-      '<div style="overflow-y:auto;flex:1">' + rows + '</div>';
+      '<div style="padding:8px 12px;border-bottom:1px solid #f1f5f9;flex-shrink:0">' +
+        '<input id="nd-deal-search" placeholder="' + searchHint + '" autocomplete="off" ' +
+          'style="width:100%;padding:7px 10px;border:1px solid #e2e8f0;border-radius:8px;font-size:12px;box-sizing:border-box;outline:none">' +
+      '</div>' +
+      '<div id="nd-deal-list" style="overflow-y:auto;flex:1">' + renderRows('') + '</div>';
 
     document.body.appendChild(box);
-    document.getElementById('nd-picker-close').addEventListener('click', function () { box.remove(); });
 
-    box.querySelectorAll('.nd-deal-row').forEach(function (row) {
-      row.addEventListener('mouseenter', function () { row.style.background = '#f8fafc'; });
-      row.addEventListener('mouseleave', function () { row.style.background = ''; });
-      row.addEventListener('click', function () {
-        var deal = deals.find(function (d) { return d._id === row.getAttribute('data-id'); });
-        if (deal) { onPick(deal); box.remove(); }
+    function wireRows() {
+      box.querySelectorAll('.nd-deal-row').forEach(function (row) {
+        row.addEventListener('mouseenter', function () { row.style.background = '#f8fafc'; });
+        row.addEventListener('mouseleave', function () { row.style.background = ''; });
+        row.addEventListener('click', function () {
+          var deal = deals.find(function (d) { return d._id === row.getAttribute('data-id'); });
+          if (deal) { onPick(deal); box.remove(); }
+        });
       });
+    }
+    wireRows();
+
+    var searchEl = box.querySelector('#nd-deal-search');
+    var listEl = box.querySelector('#nd-deal-list');
+    searchEl.addEventListener('input', function () {
+      listEl.innerHTML = renderRows(searchEl.value.trim());
+      wireRows();
     });
+    searchEl.focus();
+
+    document.getElementById('nd-picker-close').addEventListener('click', function () { box.remove(); });
 
     setTimeout(function () {
       document.addEventListener('click', function close(e) {

@@ -297,15 +297,14 @@
   }
 
   function fillCommForm(deal) {
-    var comm = dealComm(deal);
     // Use includes() matching so asterisks and casing variations don't matter
     var fills = [
       { match: 'Deal Reference', value: (deal.property_name || deal.unit_no || '') +
           (deal.unit_no && deal.property_name ? ' — ' + deal.unit_no : '') +
           (deal._id ? ' [' + deal._id + ']' : ''), type: 'text' },
-      { match: 'Client Name',         value: deal.client_name || '',   type: 'text' },
-      { match: 'Property / Area',     value: deal.developer || '',     type: 'text' },
-      { match: 'Transaction Date',    value: deal.created_at || '',    type: 'date' },
+      { match: 'Client Name',      value: deal.client_name || '',  type: 'text' },
+      { match: 'Property / Area',  value: deal.developer || '',    type: 'text' },
+      { match: 'Transaction Date', value: deal.created_at || '',   type: 'date' },
     ];
 
     document.querySelectorAll('.form-group').forEach(function (g) {
@@ -321,6 +320,42 @@
         }
       });
     });
+
+    // Inject a read-only deal value banner below the Deal Reference field
+    var old = document.getElementById('nd-deal-value-row');
+    if (old) old.remove();
+
+    var txVal = parseFloat(deal.transaction_value);
+    if (!txVal) return;
+
+    var dealGroup = null;
+    document.querySelectorAll('.form-group label').forEach(function (l) {
+      if (!dealGroup && (l.textContent || '').includes('Deal Reference')) {
+        dealGroup = l.closest('.form-group');
+      }
+    });
+    if (!dealGroup) return;
+
+    var commPct = parseFloat(deal.commission_pct) || 0;
+    var commAed = Math.round(txVal * commPct / 100);
+
+    var row = document.createElement('div');
+    row.id = 'nd-deal-value-row';
+    row.style.cssText = [
+      'margin-top:6px;padding:10px 14px;background:#f0fdf4',
+      'border:1px solid #bbf7d0;border-radius:8px',
+      'font-size:12px;color:#166534;display:flex;justify-content:space-between;align-items:center;gap:16px'
+    ].join(';');
+    row.innerHTML =
+      '<div>' +
+        '<div style="font-weight:700;font-size:13px">Deal Value (from accounting)</div>' +
+        '<div style="margin-top:2px;color:#15803d">' +
+          (commPct ? 'Company commission at ' + commPct + '%: <strong>' + fmtAed(commAed) + '</strong>' : 'No commission % on record') +
+        '</div>' +
+      '</div>' +
+      '<div style="font-weight:800;font-size:16px;white-space:nowrap">' + fmtAed(txVal) + '</div>';
+
+    dealGroup.insertAdjacentElement('afterend', row);
   }
 
   function showDealPicker(anchor, deals, showAll, onPick) {

@@ -394,6 +394,8 @@
   // ════════════════════════════════════════════════════════════════════════════
   async function buildAlerts() {
     var items = [];
+
+    // ── Document expiry alerts ────────────────────────────────────────────────
     var allDocs = await getAllDocs();
     var emps = await loadAllEmps();
     var empById = {};
@@ -418,6 +420,21 @@
         }
       });
     });
+
+    // ── Commission gap alerts (deals collected in accounting but no HR entry) ─
+    if (window.nasamaDeals && typeof window.nasamaDeals.detectCommissionGaps === 'function') {
+      try {
+        var gaps = await window.nasamaDeals.detectCommissionGaps();
+        gaps.slice(0, 10).forEach(function (d) {
+          items.push({
+            urgent: true,
+            icon: '💼',
+            text: 'Commission Collected — no HR entry: ' + (d.property_name || d.unit_no || d._id) +
+                  (d.broker_name ? ' (' + d.broker_name + ')' : ''),
+          });
+        });
+      } catch (e) { /* accounting bridge not ready yet */ }
+    }
 
     items.sort(function (a, b) { return (b.urgent ? 1 : 0) - (a.urgent ? 1 : 0); });
     return items;

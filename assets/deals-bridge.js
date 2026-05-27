@@ -20,8 +20,9 @@
   var linksCache = null;
   var empsCache = null;
   var obsTimer = null;
-  var commFormDone = false;
-  var leaderboardDone = false;
+  var commFormDone     = false;
+  var leaderboardDone  = false;
+  var payrollFormDone  = false;
 
   // ── FIREBASE INIT ────────────────────────────────────────────────────────────
   async function initAcct() {
@@ -45,6 +46,13 @@
     var app = window.firebase && window.firebase.apps &&
       window.firebase.apps.find(function (a) { return a.name === '[DEFAULT]'; });
     return app ? app.database() : null;
+  }
+
+  // HR Cloud Firestore (same project as RTDB — commissions, salaryRecords, attendance, etc.)
+  function hrFs() {
+    var app = window.firebase && window.firebase.apps &&
+      window.firebase.apps.find(function (a) { return a.name === '[DEFAULT]'; });
+    return app ? app.firestore() : null;
   }
 
   // ── DEAL QUERIES ──────────────────────────────────────────────────────────────
@@ -110,6 +118,50 @@
       return data;
     } catch (e) {
       console.warn('[NasamaDeals] fetchAllDealsYTD:', e.message);
+      return [];
+    }
+  }
+
+  // ── HR FIRESTORE QUERIES ──────────────────────────────────────────────────────
+
+  async function queryMonthComms(empId, mo, yr) {
+    var db = hrFs(); if (!db) return [];
+    var month = yr + '-' + String(mo).padStart(2, '0');
+    try {
+      var snap = await db.collection('commissions')
+        .where('employeeId', '==', empId)
+        .where('month', '==', month)
+        .get();
+      var data = [];
+      snap.forEach(function (d) { data.push(Object.assign({ _id: d.id }, d.data())); });
+      return data;
+    } catch (e) {
+      console.warn('[NasamaDeals] queryMonthComms:', e.message);
+      return [];
+    }
+  }
+
+  async function detectCommissionGaps() {
+    if (!acctDb) return [];
+    var db = hrFs(); if (!db) return [];
+    var yr = new Date().getFullYear();
+    try {
+      var collected = (await fetchAllDealsYTD(yr)).filter(isCollected);
+      if (!collected.length) return [];
+      // Load HR commissions for the year
+      var snap = await db.collection('commissions')
+        .where('month', '>=', yr + '-01')
+        .where('month', '<=', yr + '-12')
+        .get();
+      // Extract accounting deal IDs embedded as [...] at the end of the deal field
+      var linked = new Set();
+      snap.forEach(function (d) {
+        var m = (d.data().deal || '').match(/\[([^\]]+)\]$/);
+        if (m) linked.add(m[1]);
+      });
+      return collected.filter(function (d) { return !linked.has(d._id); });
+    } catch (e) {
+      console.warn('[NasamaDeals] detectCommissionGaps:', e.message);
       return [];
     }
   }
@@ -550,6 +602,7 @@
 
     card.innerHTML = buildPerfCard(empId, brokerId, results[0], results[1], results[2], mo, yr);
     wireTargetBtns(card, empId, yr, mo);
+    addStatementBtn(card, empId, mo, yr);
   }
 
   function buildPerfCard(empId, brokerId, monthDeals, ytdDeals, target, mo, yr) {
@@ -760,6 +813,201 @@
     ].join('');
   }
 
+  // ── COMMISSION STATEMENT ─────────────────────────────────────────────────────
+  // "Statement" button on the performance card → popup showing HR commission records.
+
+  function addStatementBtn(card, empId, mo, yr) {
+    var header = card.firstElementChild;
+    if (!header || card.querySelector('.nd-stmt-btn')) return;
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'nd-stmt-btn';
+    btn.style.cssText = 'font-size:10px;padding:2px 9px;border-radius:5px;border:1px solid #94a3b8;background:none;color:#94a3b8;cursor:pointer';
+    btn.textContent = 'Statement';
+    header.appendChild(btn);
+    btn.addEventListener('click', async function () {
+      btn.textContent = 'Loading…';
+      var comms = await queryMonthComms(empId, mo, yr);
+      btn.textContent = 'Statement';
+      showCommStatement(comms, mo, yr);
+    });
+  }
+
+  function showCommStatement(comms, mo, yr) {
+    var old = document.getElementById('nd-stmt-popup');
+    if (old) old.remove();
+
+    var box = document.createElement('div');
+    box.id = 'nd-stmt-popup';
+    box.style.cssText = [
+      'position:fixed;z-index:100001;background:#fff;border-radius:12px',
+      'box-shadow:0 8px 40px rgba(0,0,0,.25);border:1px solid #e2e8f0',
+      'width:520px;max-height:80vh;top:50%;left:50%;transform:translate(-50%,-50%)',
+      'overflow:hidden;display:flex;flex-direction:column'
+    ].join(';');
+
+    var total = comms.reduce(function (s, c) { return s + (c.amount || 0); }, 0);
+    var paid  = comms.filter(function (c) { return c.status === 'paid'; })
+                     .reduce(function (s, c) { return s + (c.amount || 0); }, 0);
+
+    var STATUS_COLOR = { paid: '#22c55e', approved: '#3b82f6', settled: '#a78bfa',
+                         under_review: '#f59e0b', pending: '#94a3b8' };
+
+    var rows = comms.length
+      ? comms.map(function (c) {
+          var sc = STATUS_COLOR[c.status] || '#94a3b8';
+          return '<tr style="border-top:1px solid #f1f5f9">' +
+            '<td style="padding:7px 10px;font-size:12px;color:#0f172a;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (c.deal || '—') + '</td>' +
+            '<td style="padding:7px 10px;font-size:12px;color:#64748b">' + (c.client || '—') + '</td>' +
+            '<td style="padding:7px 10px;font-size:12px;text-align:right;font-weight:700">' + fmtAed(c.amount || 0) + '</td>' +
+            '<td style="padding:7px 10px;text-align:center">' +
+              '<span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:8px;' +
+                'background:' + sc + '20;color:' + sc + '">' + (c.status || '—') + '</span>' +
+            '</td>' +
+            '<td style="padding:7px 10px;font-size:11px;color:#94a3b8">' + (c.txDate || c.paidDate || '—') + '</td>' +
+          '</tr>';
+        }).join('')
+      : '<tr><td colspan="5" style="padding:24px;text-align:center;color:#94a3b8;font-size:12px">No commission records for this month</td></tr>';
+
+    box.innerHTML =
+      '<div style="background:linear-gradient(135deg,#1e293b,#334155);padding:12px 18px;' +
+          'display:flex;align-items:center;justify-content:space-between;flex-shrink:0">' +
+        '<div style="color:#f8fafc;font-size:13px;font-weight:700">Commission Statement &nbsp;·&nbsp; ' + MONTHS[mo - 1] + ' ' + yr + '</div>' +
+        '<button id="nd-stmt-close" type="button" style="background:none;border:none;color:#94a3b8;cursor:pointer;font-size:18px;padding:0">✕</button>' +
+      '</div>' +
+      '<div style="overflow-y:auto;flex:1">' +
+        '<table style="width:100%;border-collapse:collapse">' +
+          '<thead><tr style="background:#f8fafc">' +
+            '<th style="padding:6px 10px;font-size:10px;color:#94a3b8;font-weight:600;text-align:left">DEAL</th>' +
+            '<th style="padding:6px 10px;font-size:10px;color:#94a3b8;font-weight:600;text-align:left">CLIENT</th>' +
+            '<th style="padding:6px 10px;font-size:10px;color:#94a3b8;font-weight:600;text-align:right">AMOUNT</th>' +
+            '<th style="padding:6px 10px;font-size:10px;color:#94a3b8;font-weight:600;text-align:center">STATUS</th>' +
+            '<th style="padding:6px 10px;font-size:10px;color:#94a3b8;font-weight:600;text-align:left">DATE</th>' +
+          '</tr></thead>' +
+          '<tbody>' + rows + '</tbody>' +
+        '</table>' +
+      '</div>' +
+      '<div style="padding:10px 14px;border-top:1px solid #f1f5f9;display:flex;justify-content:space-between;' +
+          'align-items:center;flex-shrink:0;background:#f8fafc">' +
+        '<div style="font-size:11px;color:#64748b">' + comms.length + ' record(s)</div>' +
+        '<div style="font-size:12px">' +
+          '<span style="color:#64748b;margin-right:14px">Paid: <strong style="color:#22c55e">' + fmtAed(paid) + '</strong></span>' +
+          '<span style="color:#0f172a;font-weight:700">Total: ' + fmtAed(total) + '</span>' +
+        '</div>' +
+      '</div>';
+
+    document.body.appendChild(box);
+    box.querySelector('#nd-stmt-close').addEventListener('click', function () { box.remove(); });
+    setTimeout(function () {
+      document.addEventListener('click', function close(e) {
+        if (!box.contains(e.target)) { box.remove(); document.removeEventListener('click', close); }
+      });
+    }, 100);
+  }
+
+  // ── PAYROLL AUTO-HINT ─────────────────────────────────────────────────────────
+  // When the payroll form is open, queries approved commissions for that employee/month
+  // and injects a one-click "Use this" hint next to the bonus/commission field.
+
+  async function injectPayrollHint() {
+    // Detect payroll form by looking for Basic + Transport labels together
+    var labels = document.querySelectorAll('.form-group label');
+    var hasBasic = false, hasTrans = false;
+    labels.forEach(function (l) {
+      var t = (l.textContent || '').toLowerCase();
+      if (t.includes('basic'))     hasBasic = true;
+      if (t.includes('transport')) hasTrans = true;
+    });
+    if (!hasBasic || !hasTrans) { payrollFormDone = false; return; }
+    if (payrollFormDone || document.getElementById('nd-payroll-hint')) { payrollFormDone = true; return; }
+
+    // Find the employee/broker select
+    var empSelect = null;
+    document.querySelectorAll('.form-group').forEach(function (g) {
+      if (empSelect) return;
+      var lbl = g.querySelector('label');
+      if (!lbl) return;
+      var t = (lbl.textContent || '').toLowerCase();
+      if (t.includes('employee') || t.includes('broker')) empSelect = g.querySelector('select');
+    });
+    if (!empSelect || !empSelect.value) return;
+
+    // Find month from any date/month/period input
+    var monthStr = null;
+    document.querySelectorAll('.form-group').forEach(function (g) {
+      if (monthStr) return;
+      var lbl = g.querySelector('label');
+      var inp = g.querySelector('input');
+      if (!lbl || !inp) return;
+      var t = (lbl.textContent || '').toLowerCase();
+      if (t.includes('month') || t.includes('period') || t.includes('date')) monthStr = inp.value;
+    });
+
+    var now = new Date();
+    var yr = now.getFullYear(), mo = now.getMonth() + 1;
+    if (monthStr) {
+      var parts = monthStr.split('-');
+      if (parts[0]) yr = parseInt(parts[0]) || yr;
+      if (parts[1]) mo = parseInt(parts[1]) || mo;
+    }
+
+    payrollFormDone = true;
+    var empId = empSelect.value;
+    var comms = await queryMonthComms(empId, mo, yr);
+    var approved = comms.filter(function (c) {
+      var s = (c.status || '').toLowerCase();
+      return s === 'paid' || s === 'approved' || s === 'settled';
+    });
+    if (!approved.length) return;
+
+    var total = approved.reduce(function (s, c) { return s + (c.amount || 0); }, 0);
+
+    // Find the bonus / commission field
+    var bonusGroup = null;
+    labels.forEach(function (l) {
+      if (bonusGroup) return;
+      var t = (l.textContent || '').toLowerCase();
+      if (t.includes('commission') || t.includes('bonus')) bonusGroup = l.closest('.form-group');
+    });
+    if (!bonusGroup) return;
+
+    var hint = document.createElement('div');
+    hint.id = 'nd-payroll-hint';
+    hint.style.cssText = [
+      'margin-top:6px;padding:8px 12px;background:#eff6ff',
+      'border:1px solid #bfdbfe;border-radius:8px',
+      'display:flex;align-items:center;justify-content:space-between;gap:10px'
+    ].join(';');
+    hint.innerHTML =
+      '<div>' +
+        '<div style="font-size:11px;font-weight:700;color:#1d4ed8">⚡ ' + approved.length + ' approved commission(s) found</div>' +
+        '<div style="font-size:11px;color:#3b82f6">' + MONTHS[mo - 1] + ' ' + yr + ' total: <strong>' + fmtAed(total) + '</strong></div>' +
+      '</div>' +
+      '<button type="button" id="nd-payroll-use" style="padding:5px 12px;border-radius:6px;border:none;' +
+        'background:#3b82f6;color:#fff;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap">↑ Use this</button>';
+
+    bonusGroup.appendChild(hint);
+
+    hint.querySelector('#nd-payroll-use').addEventListener('click', function () {
+      var input = bonusGroup.querySelector('input');
+      if (!input) return;
+      // Use React fiber setter (same pattern as fillCommForm)
+      var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      nativeSetter.call(input, String(total));
+      var fiberKey = Object.keys(input).find(function (k) {
+        return k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance');
+      });
+      if (fiberKey) {
+        var props = input[fiberKey] && input[fiberKey].memoizedProps;
+        if (props && typeof props.onChange === 'function') {
+          props.onChange({ target: input, currentTarget: input, type: 'change', bubbles: true,
+                           preventDefault: function () {}, stopPropagation: function () {} });
+        }
+      }
+      hint.innerHTML = '<div style="font-size:11px;color:#22c55e;font-weight:700">✓ Commission amount applied — ' + fmtAed(total) + '</div>';
+    });
+  }
+
   // ── LINK POPUP ────────────────────────────────────────────────────────────────
   function showLinkPopup(empId, anchor) {
     var old = document.getElementById('nd-link-popup');
@@ -819,10 +1067,12 @@
   var observer = new MutationObserver(function () {
     clearTimeout(obsTimer);
     obsTimer = setTimeout(function () {
-      commFormDone = false;
+      commFormDone    = false;
+      payrollFormDone = false;
       injectCommForm();
       injectPerfCard();
       injectLeaderboard();
+      injectPayrollHint();
     }, 150);
   });
 
@@ -841,6 +1091,7 @@
     injectCommForm();
     injectPerfCard();
     injectLeaderboard();
+    injectPayrollHint();
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
@@ -852,6 +1103,7 @@
     fetchDealsYTD: fetchDealsYTD,
     saveLink: saveLink,
     saveTarget: saveTarget,
+    detectCommissionGaps: detectCommissionGaps,
     clearCache: function () { dealsCache = {}; linksCache = null; empsCache = null; }
   };
 })();

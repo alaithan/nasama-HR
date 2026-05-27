@@ -21,6 +21,7 @@
   var empsCache = null;
   var obsTimer = null;
   var commFormDone = false;
+  var leaderboardDone = false;
 
   // ── FIREBASE INIT ────────────────────────────────────────────────────────────
   async function initAcct() {
@@ -648,6 +649,117 @@
     });
   }
 
+  // ── BROKER LEADERBOARD ───────────────────────────────────────────────────────
+  // Injected on the Employees list page — ranks all linked brokers by YTD collected commission.
+
+  async function injectLeaderboard() {
+    if (!acctDb) return;
+
+    // Only on the Employees LIST page (not the detail page)
+    var pageTitle = document.querySelector('.page-title');
+    if (!pageTitle) { leaderboardDone = false; return; }
+    var titleText = (pageTitle.textContent || '').trim().replace(/^[^A-Za-z]*/, '').trim();
+    if (titleText.toLowerCase() !== 'employees') { leaderboardDone = false; return; }
+    var hasBack = false;
+    document.querySelectorAll('button').forEach(function (b) {
+      if ((b.textContent || '').trim() === '← Employees') hasBack = true;
+    });
+    if (hasBack) { leaderboardDone = false; return; }
+    if (document.getElementById('nd-leaderboard')) return;
+    if (leaderboardDone) return;
+    leaderboardDone = true;
+
+    // Find injection anchor — after the title's immediate parent row / header
+    var anchor = pageTitle.closest('[class]') || pageTitle.parentElement;
+    if (!anchor) { leaderboardDone = false; return; }
+
+    var wrap = document.createElement('div');
+    wrap.id = 'nd-leaderboard';
+    wrap.style.cssText = 'margin:0 0 20px;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;background:#fff';
+    wrap.innerHTML = '<div style="padding:16px;text-align:center;color:#94a3b8;font-size:13px">Loading broker rankings…</div>';
+    anchor.insertAdjacentElement('afterend', wrap);
+
+    // Load broker links
+    var db = hrDb();
+    if (!db) { wrap.remove(); leaderboardDone = false; return; }
+    var linksSnap = await db.ref(HR_ROOT + '/broker_links').once('value');
+    var links = linksSnap.val() || {};
+    var empIds = Object.keys(links);
+    if (!empIds.length) {
+      wrap.innerHTML = buildLeaderboard([], new Date().getFullYear(), new Date().getMonth() + 1);
+      return;
+    }
+
+    var emps = await loadEmps();
+    var empById = {};
+    emps.forEach(function (e) { if (e.id) empById[e.id] = e; });
+
+    var now = new Date();
+    var yr = now.getFullYear();
+    var mo = now.getMonth() + 1;
+
+    var rows = await Promise.all(empIds.map(async function (empId) {
+      var brokerId = links[empId] && links[empId].brokerAcctId;
+      var emp = empById[empId];
+      if (!brokerId || !emp) return null;
+      try {
+        var ytd = await fetchDealsYTD(brokerId, yr);
+        var mon = await fetchDeals(brokerId, mo, yr);
+        return {
+          name:        emp.name,
+          brokerId:    brokerId,
+          ytdCollected: ytd.filter(isCollected).reduce(function (s, d) { return s + dealComm(d); }, 0),
+          moCollected:  mon.filter(isCollected).reduce(function (s, d) { return s + dealComm(d); }, 0),
+          pipeline:     ytd.filter(function (d) { return !isCollected(d) && isActive(d); })
+                           .reduce(function (s, d) { return s + dealComm(d); }, 0),
+          deals:        ytd.filter(isActive).length,
+        };
+      } catch (e) { return null; }
+    }));
+
+    var sorted = rows.filter(Boolean).sort(function (a, b) { return b.ytdCollected - a.ytdCollected; });
+    wrap.innerHTML = buildLeaderboard(sorted, yr, mo);
+  }
+
+  function buildLeaderboard(rows, yr, mo) {
+    var medals = ['🥇', '🥈', '🥉'];
+    var moLabel = MONTHS[mo - 1] + ' ' + yr;
+
+    var tableRows = rows.length
+      ? rows.map(function (r, i) {
+          return '<tr style="border-top:1px solid #f1f5f9">' +
+            '<td style="padding:8px 12px;font-size:14px;width:32px">' +
+              (medals[i] || '<span style="color:#94a3b8;font-size:11px;font-weight:700">#' + (i + 1) + '</span>') +
+            '</td>' +
+            '<td style="padding:8px 6px">' +
+              '<div style="font-size:13px;font-weight:600;color:#0f172a">' + r.name + '</div>' +
+              '<div style="font-size:10px;color:#94a3b8">' + r.brokerId + ' &nbsp;·&nbsp; ' + r.deals + ' active deals</div>' +
+            '</td>' +
+            '<td style="padding:8px 12px;font-size:12px;text-align:right;color:#f59e0b;font-weight:600">' + fmtAed(r.moCollected) + '</td>' +
+            '<td style="padding:8px 12px;font-size:12px;text-align:right;color:#22c55e;font-weight:700">' + fmtAed(r.ytdCollected) + '</td>' +
+            '<td style="padding:8px 12px;font-size:12px;text-align:right;color:#60a5fa">' + fmtAed(r.pipeline) + '</td>' +
+          '</tr>';
+        }).join('')
+      : '<tr><td colspan="5" style="padding:20px;text-align:center;color:#94a3b8;font-size:12px">No brokers linked yet — link broker IDs from employee detail pages</td></tr>';
+
+    return [
+      '<div style="background:linear-gradient(135deg,#1e293b,#334155);padding:12px 18px;display:flex;align-items:center;justify-content:space-between">',
+        '<div style="color:#f8fafc;font-size:13px;font-weight:700">🏆 Broker Leaderboard</div>',
+        '<div style="font-size:11px;color:#94a3b8">' + moLabel + ' &nbsp;·&nbsp; YTD ' + yr + '</div>',
+      '</div>',
+      '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">',
+        '<thead><tr style="background:#f8fafc">',
+          '<th style="padding:6px 12px;font-size:10px;color:#94a3b8;font-weight:600;text-align:left;width:32px"></th>',
+          '<th style="padding:6px 6px;font-size:10px;color:#94a3b8;font-weight:600;text-align:left">BROKER</th>',
+          '<th style="padding:6px 12px;font-size:10px;color:#94a3b8;font-weight:600;text-align:right">THIS MONTH</th>',
+          '<th style="padding:6px 12px;font-size:10px;color:#94a3b8;font-weight:600;text-align:right">YTD COLLECTED</th>',
+          '<th style="padding:6px 12px;font-size:10px;color:#94a3b8;font-weight:600;text-align:right">PIPELINE</th>',
+        '</tr></thead>',
+        '<tbody>' + tableRows + '</tbody>',
+      '</table></div>',
+    ].join('');
+  }
+
   // ── LINK POPUP ────────────────────────────────────────────────────────────────
   function showLinkPopup(empId, anchor) {
     var old = document.getElementById('nd-link-popup');
@@ -710,6 +822,7 @@
       commFormDone = false;
       injectCommForm();
       injectPerfCard();
+      injectLeaderboard();
     }, 150);
   });
 
@@ -727,6 +840,7 @@
     observer.observe(document.body, { childList: true, subtree: true });
     injectCommForm();
     injectPerfCard();
+    injectLeaderboard();
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);

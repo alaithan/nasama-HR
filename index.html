@@ -7,7 +7,7 @@
     <title>Nasama HR - Real Estate Dubai</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-    <script type="module" crossorigin src="./assets/index-BEbe05fm.js"></script>
+    <script type="module" crossorigin src="./assets/index-D4TMyP6c.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-B50lC15H.css">
     <link rel="stylesheet" href="./assets/receipt-report-overrides.css">
     <link rel="stylesheet" href="./assets/google-auth-flow.css?v=20260417-4">
@@ -16,127 +16,6 @@
     <script defer src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
     <script defer src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script>
     <script defer src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
-    <script defer src="./assets/google-auth-flow.js?v=20260417-4"></script>
-    <script defer src="./assets/deals-bridge.js?v=20260527-1"></script>
-    <script defer src="./assets/hr-enhancements.js?v=20260527-1"></script>
-
-    <!-- HR Officer Access Restrictions: No Dashboard, No Reports -->
-    <script>
-    (function() {
-      'use strict';
-
-      var SESSION_KEY    = 'nasama_hr_session';
-      var BLOCKED_ROLE   = 'hr_officer';
-      var BLOCKED_PAGES  = ['Dashboard', 'Reports'];
-      var REDIRECT_LABEL = 'Employees';
-      var _roleCache     = null;
-      var _hrRedirecting = false;
-      var _observerTimer = null;
-
-      // Cache the role so localStorage is not parsed on every MutationObserver tick.
-      // Invalidate on storage change (logout / role switch without page reload).
-      function getRole() {
-        if (_roleCache !== null) return _roleCache;
-        try {
-          var raw = localStorage.getItem(SESSION_KEY);
-          if (!raw) { _roleCache = ''; return ''; }
-          var session = JSON.parse(raw);
-          _roleCache = (session && session.role) ? session.role : '';
-          return _roleCache;
-        } catch(e) { _roleCache = ''; return ''; }
-      }
-
-      window.addEventListener('storage', function(e) {
-        if (e.key === SESSION_KEY) { _roleCache = null; runPatches(); }
-      });
-
-      function isBlocked() {
-        return getRole() === BLOCKED_ROLE;
-      }
-
-      // Strip leading emoji/symbols before comparing.
-      // Falls back to the full trimmed string when no Latin letter exists
-      // (icon-only items) so matching never silently breaks.
-      function matchesNav(text, label) {
-        if (!text || !label) return false;
-        var stripped = text.trim().replace(/^[^A-Za-z0-9]*/, '').trim();
-        var cleaned  = (stripped.length ? stripped : text.trim()).toLowerCase();
-        var target   = label.toLowerCase();
-        return cleaned === target || cleaned.endsWith(' ' + target);
-      }
-
-      // Hide blocked nav items. Receives the pre-queried NodeList from runPatches.
-      function patchSidebar(navItems) {
-        if (!isBlocked()) return;
-        for (var i = 0; i < navItems.length; i++) {
-          var text = navItems[i].textContent.trim();
-          for (var j = 0; j < BLOCKED_PAGES.length; j++) {
-            if (matchesNav(text, BLOCKED_PAGES[j])) {
-              navItems[i].style.display = 'none';
-            }
-          }
-        }
-      }
-
-      // Redirect away from blocked pages.
-      // window._hrRedirecting prevents a click-loop while the SPA router catches up.
-      function patchPageAccess(navItems) {
-        if (!isBlocked()) return;
-        var pageTitle = document.querySelector('.page-title');
-        if (!pageTitle) return;
-        var current = pageTitle.textContent.trim();
-
-        var onBlockedPage = false;
-        for (var j = 0; j < BLOCKED_PAGES.length; j++) {
-          if (matchesNav(current, BLOCKED_PAGES[j])) { onBlockedPage = true; break; }
-        }
-        if (!onBlockedPage) return;
-        if (_hrRedirecting) return;
-
-        for (var i = 0; i < navItems.length; i++) {
-          if (matchesNav(navItems[i].textContent, REDIRECT_LABEL)) {
-            _hrRedirecting = true;
-            navItems[i].click();
-            var _redirectCheck = setInterval(function() {
-              var pt = document.querySelector('.page-title');
-              if (!pt) return;
-              var cur = pt.textContent.trim();
-              var stillBlocked = false;
-              for (var k = 0; k < BLOCKED_PAGES.length; k++) {
-                if (matchesNav(cur, BLOCKED_PAGES[k])) { stillBlocked = true; break; }
-              }
-              if (!stillBlocked) { clearInterval(_redirectCheck); _hrRedirecting = false; }
-            }, 100);
-            setTimeout(function() { clearInterval(_redirectCheck); _hrRedirecting = false; }, 3000);
-            return;
-          }
-        }
-      }
-
-      // Single DOM query shared by both patch functions.
-      function runPatches() {
-        var navItems = document.querySelectorAll('.nav-item');
-        patchSidebar(navItems);
-        patchPageAccess(navItems);
-      }
-
-      function startObserver() {
-        if (!document.body) { setTimeout(startObserver, 50); return; }
-        runPatches();
-        var observer = new MutationObserver(function() {
-          clearTimeout(_observerTimer);
-          _observerTimer = setTimeout(runPatches, 60);
-        });
-        observer.observe(document.body, { childList: true, subtree: true });
-      }
-
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', startObserver);
-      } else {
-        startObserver();
-      }
-    })();
-    </script>
   </head>
   <body>
     <div id="root"></div>

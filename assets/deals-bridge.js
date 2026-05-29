@@ -201,6 +201,11 @@
   function isCollected(d) {
     return String(d.stage || '').trim().toLowerCase() === 'commission collected';
   }
+  // Deals selectable in the commission entry picker: collected OR earned (not earlier leads)
+  function isCommissionable(d) {
+    var s = String(d.stage || '').trim().toLowerCase();
+    return s === 'commission collected' || s === 'commission earned';
+  }
   function isActive(d) { return d.stage !== 'Cancelled'; }
 
   // ── HR DATA ───────────────────────────────────────────────────────────────────
@@ -508,11 +513,11 @@
     var deals;
 
     if (brokerId) {
-      deals = (await fetchDealsYTD(brokerId, now.getFullYear())).filter(isCollected);
-      if (!deals.length) deals = (await fetchDealsYTD(brokerId, now.getFullYear() - 1)).filter(isCollected);
+      deals = (await fetchDealsYTD(brokerId, now.getFullYear())).filter(isCommissionable);
+      if (!deals.length) deals = (await fetchDealsYTD(brokerId, now.getFullYear() - 1)).filter(isCommissionable);
     } else {
-      deals = (await fetchAllDealsYTD(now.getFullYear())).filter(isCollected);
-      if (!deals.length) deals = (await fetchAllDealsYTD(now.getFullYear() - 1)).filter(isCollected);
+      deals = (await fetchAllDealsYTD(now.getFullYear())).filter(isCommissionable);
+      if (!deals.length) deals = (await fetchAllDealsYTD(now.getFullYear() - 1)).filter(isCommissionable);
     }
 
     if (button) {
@@ -676,7 +681,7 @@
           })
         : deals;
       if (!list.length) {
-        return '<div style="padding:28px;text-align:center;color:#94a3b8;font-size:13px">No commission collected deals match your search</div>';
+        return '<div style="padding:28px;text-align:center;color:#94a3b8;font-size:13px">No collected or earned deals match your search</div>';
       }
       return list.map(buildRow).join('');
     }
@@ -685,7 +690,7 @@
 
     box.innerHTML =
       '<div style="padding:12px 14px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;flex-shrink:0">' +
-        '<span style="font-size:13px;font-weight:700;color:#0f172a">Select Commission Collected Deal' +
+        '<span style="font-size:13px;font-weight:700;color:#0f172a">Select Commission Deal' +
           (showAll ? ' <span style="font-size:11px;font-weight:400;color:#94a3b8">(all brokers)</span>' : '') +
         '</span>' +
         '<button id="nd-picker-close" type="button" style="background:none;border:none;cursor:pointer;color:#94a3b8;font-size:18px;line-height:1;padding:0">✕</button>' +

@@ -11,6 +11,15 @@
     appId: '1:738071507036:web:131bc36e03f646003a3699'
   };
   var ACCT_APP_NAME = 'nasama-accounting-bridge';
+  var ACCT_APP_URL = 'https://nasama-accuntant.firebaseapp.com';
+  var HR_CFG = {
+    apiKey: 'AIzaSyAqkLr-uJKIE8uW8zrgqlMpte0KfGPnOBM',
+    authDomain: 'nasama-hr.firebaseapp.com',
+    databaseURL: 'https://nasama-hr-default-rtdb.firebaseio.com',
+    projectId: 'nasama-hr',
+    storageBucket: 'nasama-hr.firebasestorage.app'
+  };
+  var HR_APP_NAME = 'nasama-hr-bridge';
   var HR_ROOT = 'nasama_hr';
   var CACHE_TTL = 5 * 60 * 1000;
 
@@ -23,6 +32,7 @@
   var commFormDone     = false;
   var leaderboardDone  = false;
   var payrollFormDone  = false;
+  var dealSyncBusy     = false;
 
   // ── FIREBASE INIT ────────────────────────────────────────────────────────────
   async function initAcct() {
@@ -42,18 +52,31 @@
     return true;
   }
 
-  function hrDb() {
-    var app = window.firebase && window.firebase.apps &&
-      window.firebase.apps.find(function (a) { return a.name === '[DEFAULT]'; });
-    return app ? app.database() : null;
+  // Always target the nasama-hr project explicitly — never the accounting app
+  function findHrApp() {
+    if (!window.firebase || !window.firebase.apps) return null;
+    try {
+      var def = window.firebase.app();
+      if (def && def.options && def.options.projectId === 'nasama-hr') return def;
+    } catch (e) {}
+    return window.firebase.apps.find(function (a) {
+      return a.options && a.options.projectId === 'nasama-hr';
+    }) || initHrCompatApp();
   }
 
-  // HR Cloud Firestore (same project as RTDB — commissions, salaryRecords, attendance, etc.)
-  function hrFs() {
-    var app = window.firebase && window.firebase.apps &&
-      window.firebase.apps.find(function (a) { return a.name === '[DEFAULT]'; });
-    return app ? app.firestore() : null;
+  function initHrCompatApp() {
+    if (!window.firebase || !window.firebase.initializeApp) return null;
+    try {
+      var existing = window.firebase.apps.find(function (a) { return a.name === HR_APP_NAME; });
+      return existing || window.firebase.initializeApp(HR_CFG, HR_APP_NAME);
+    } catch (e) {
+      console.warn('[NasamaDeals] HR compat app init failed:', e.message);
+      return null;
+    }
   }
+
+  function hrDb() { var a = findHrApp(); try { return a ? a.database() : null; } catch (e) { return null; } }
+  function hrFs() { var a = findHrApp(); try { return a ? a.firestore() : null; } catch (e) { return null; } }
 
   // ── DEAL QUERIES ──────────────────────────────────────────────────────────────
   async function fetchDeals(brokerId, month, year) {
@@ -72,6 +95,7 @@
         .get();
       var data = [];
       snap.forEach(function (d) { data.push(Object.assign({ _id: d.id }, d.data())); });
+      data.sort(function (a, b) { return (b.created_at || '') < (a.created_at || '') ? -1 : 1; });
       dealsCache[key] = { data: data, ts: Date.now() };
       return data;
     } catch (e) {
@@ -143,22 +167,26 @@
 
   async function detectCommissionGaps() {
     if (!acctDb) return [];
-    var db = hrFs(); if (!db) return [];
     var yr = new Date().getFullYear();
     try {
       var collected = (await fetchAllDealsYTD(yr)).filter(isCollected);
       if (!collected.length) return [];
-      // Load HR commissions for the year
-      var snap = await db.collection('commissions')
-        .where('month', '>=', yr + '-01')
-        .where('month', '<=', yr + '-12')
-        .get();
-      // Extract accounting deal IDs embedded as [...] at the end of the deal field
       var linked = new Set();
-      snap.forEach(function (d) {
-        var m = (d.data().deal || '').match(/\[([^\]]+)\]$/);
-        if (m) linked.add(m[1]);
+      (await loadCommRecs()).forEach(function (comm) {
+        var id = commLinkedDealId(comm);
+        if (id) linked.add(id);
       });
+      var fs = hrFs();
+      if (fs) {
+        var snap = await fs.collection('commissions')
+          .where('month', '>=', yr + '-01')
+          .where('month', '<=', yr + '-12')
+          .get();
+        snap.forEach(function (d) {
+          var id = commLinkedDealId(d.data());
+          if (id) linked.add(id);
+        });
+      }
       return collected.filter(function (d) { return !linked.has(d._id); });
     } catch (e) {
       console.warn('[NasamaDeals] detectCommissionGaps:', e.message);
@@ -170,7 +198,9 @@
   function txAed(d) { return (parseFloat(d.transaction_value) || 0) / 100; }
   function dealComm(d) { return txAed(d) * ((parseFloat(d.commission_pct) || 0) / 100); }
 
-  function isCollected(d) { return d.stage === 'Commission Collected'; }
+  function isCollected(d) {
+    return String(d.stage || '').trim().toLowerCase() === 'commission collected';
+  }
   function isActive(d) { return d.stage !== 'Cancelled'; }
 
   // ── HR DATA ───────────────────────────────────────────────────────────────────
@@ -263,6 +293,124 @@
     '</div>';
   }
 
+  function escapeHtml(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function (ch) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch];
+    });
+  }
+
+  function normText(value) {
+    return String(value == null ? '' : value).toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+
+  function parseMoney(value) {
+    return parseFloat(String(value == null ? '' : value).replace(/[^0-9.-]/g, '')) || 0;
+  }
+
+  function monthKey(value) {
+    var s = String(value || '');
+    var m = s.match(/^(\d{4})-(\d{2})/);
+    return m ? m[1] + '-' + m[2] : '';
+  }
+
+  function commLinkedDealId(comm) {
+    if (!comm) return '';
+    if (comm.accountingDealId) return String(comm.accountingDealId);
+    if (comm.accountingDealRef) return String(comm.accountingDealRef);
+    var m = String(comm.deal || '').match(/\[([^\]]+)\]\s*$/);
+    return m ? m[1] : '';
+  }
+
+  function stripDealSuffix(value) {
+    return String(value || '').replace(/\s*\[[^\]]+\]\s*$/, '').trim();
+  }
+
+  function getDealLabel(deal) {
+    return stripDealSuffix(
+      (deal.property_name || deal.unit_no || deal.developer || 'Accounting deal') +
+      (deal.unit_no && deal.property_name ? ' - ' + deal.unit_no : '')
+    );
+  }
+
+  function getCommissionDate(comm) {
+    return comm.paidDate || comm.paymentDate || comm.datePaid || comm.approvedAt ||
+      comm.date || comm.createdAt || comm.month || '';
+  }
+
+  function isClosedCommission(comm) {
+    var status = normText(comm && comm.status);
+    return status === 'paid' || status === 'approved' || status === 'settled';
+  }
+
+  async function loadCommRecs() {
+    var db = hrDb();
+    if (!db) return [];
+    try {
+      var snap = await db.ref(HR_ROOT + '/commRecs').once('value');
+      var val = snap.val();
+      if (!val) return [];
+      return Object.keys(val).map(function (key) {
+        var rec = val[key];
+        if (!rec || typeof rec !== 'object') return null;
+        return Object.assign({ _key: key }, rec);
+      }).filter(Boolean);
+    } catch (e) {
+      console.warn('[NasamaDeals] loadCommRecs:', e.message);
+      return [];
+    }
+  }
+
+  async function linkedDealIdsFromHr() {
+    var linked = new Set();
+    (await loadCommRecs()).forEach(function (comm) {
+      var id = commLinkedDealId(comm);
+      if (id) linked.add(id);
+    });
+    return linked;
+  }
+
+  function updateLocalCommRec(comm, update) {
+    try {
+      var raw = localStorage.getItem('nasama_hr_commRecs');
+      if (!raw) return;
+      var list = JSON.parse(raw);
+      if (!Array.isArray(list)) return;
+      var idx = -1;
+      if (comm.id) idx = list.findIndex(function (r) { return r && r.id === comm.id; });
+      if (idx < 0 && comm._id) idx = list.findIndex(function (r) { return r && r._id === comm._id; });
+      if (idx < 0 && String(parseInt(comm._key, 10)) === String(comm._key)) idx = parseInt(comm._key, 10);
+      if (idx < 0 || !list[idx]) return;
+      list[idx] = Object.assign({}, list[idx], update);
+      localStorage.setItem('nasama_hr_commRecs', JSON.stringify(list));
+    } catch (e) {}
+  }
+
+  async function writeAuditEntry(action, detail, empId) {
+    var db = hrDb();
+    if (!db) return;
+    var entry = {
+      id: 'AUD' + Date.now(),
+      timestamp: new Date().toISOString(),
+      action: action,
+      detail: detail,
+      empId: empId || '',
+      actor: 'HR Sync'
+    };
+    try {
+      var ref = db.ref(HR_ROOT + '/auditLog');
+      var snap = await ref.once('value');
+      var val = snap.val();
+      var current = Array.isArray(val)
+        ? val.filter(Boolean)
+        : Object.values(val || {}).filter(Boolean);
+      var next = [entry].concat(current).slice(0, 500);
+      await ref.set(next);
+      try { localStorage.setItem('nasama_hr_auditLog', JSON.stringify(next)); } catch (e) {}
+    } catch (e) {
+      console.warn('[NasamaDeals] auditLog:', e.message);
+    }
+  }
+
   // ── COMMISSION FORM INJECTION ─────────────────────────────────────────────────
   // Adds "⚡ Import from Accounting Deals" to the "New Commission Entry" modal.
   // When a deal is selected every field is filled automatically — no double entry.
@@ -290,6 +438,32 @@
 
     commFormDone = true;
 
+    var dealInput = dealGroup.querySelector('input');
+    if (dealInput && !dealInput.dataset.ndDealPickerReady) {
+      dealInput.dataset.ndDealPickerReady = '1';
+      dealInput.placeholder = 'Select deal from accounting deals';
+      dealInput.readOnly = true;
+      dealInput.style.cursor = 'pointer';
+      dealInput.title = 'Click to select a matching accounting deal';
+      dealInput.addEventListener('click', function () { openDealPickerFromForm(dealInput); });
+      dealInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          openDealPickerFromForm(dealInput);
+        }
+      });
+    }
+
+    // Monitor broker selection change to clear deal hint
+    var brokerSelect = findBrokerSelect();
+    if (brokerSelect && !brokerSelect.dataset.ndBrokerMonitored) {
+      brokerSelect.dataset.ndBrokerMonitored = '1';
+      brokerSelect.addEventListener('change', function () {
+        var old = document.getElementById('nd-deal-value-row');
+        if (old) old.remove();
+      });
+    }
+
     var btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'nd-import-btn';
@@ -298,53 +472,63 @@
       'border:1px solid #3b82f6;background:#eff6ff;color:#1d4ed8',
       'font-size:11px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:5px'
     ].join(';');
-    btn.innerHTML = '<span>⚡</span><span>Import from Accounting Deals</span>';
+    btn.textContent = 'Select Deal Reference';
     dealGroup.appendChild(btn);
 
-    btn.addEventListener('click', async function () {
-      // Find broker select via its label — more robust than positional index
-      var brokerSelect = null;
-      document.querySelectorAll('.form-group').forEach(function (g) {
-        if (brokerSelect) return;
-        var lbl = g.querySelector('label');
-        if (lbl && (lbl.textContent || '').trim().startsWith('Broker')) {
-          brokerSelect = g.querySelector('select');
-        }
-      });
-      var empId = brokerSelect ? brokerSelect.value : '';
-      if (!empId) { alert('Select a broker first.'); return; }
+    btn.addEventListener('click', function () { openDealPickerFromForm(btn); });
+  }
 
-      btn.querySelector('span:last-child').textContent = 'Loading…';
-      btn.disabled = true;
-
-      var brokerId = await brokerIdFor(empId);
-      var showAll = !brokerId;
-      var now = new Date();
-      var deals;
-
-      if (brokerId) {
-        deals = await fetchDealsYTD(brokerId, now.getFullYear());
-        if (!deals.length) deals = await fetchDealsYTD(brokerId, now.getFullYear() - 1);
-      } else {
-        // No broker linked yet — show every deal so user can pick and optionally link
-        deals = await fetchAllDealsYTD(now.getFullYear());
-        if (!deals.length) deals = await fetchAllDealsYTD(now.getFullYear() - 1);
+  function findBrokerSelect() {
+    var brokerSelect = null;
+    document.querySelectorAll('.form-group').forEach(function (g) {
+      if (brokerSelect) return;
+      var lbl = g.querySelector('label');
+      if (lbl && (lbl.textContent || '').trim().startsWith('Broker')) {
+        brokerSelect = g.querySelector('select');
       }
+    });
+    return brokerSelect;
+  }
 
-      btn.querySelector('span:last-child').textContent = 'Import from Accounting Deals';
-      btn.disabled = false;
+  async function openDealPickerFromForm(anchor) {
+    var brokerSelect = findBrokerSelect();
+    var empId = brokerSelect ? brokerSelect.value : '';
+    if (!empId) { alert('Select a broker first.'); return; }
 
-      showDealPicker(btn, deals, showAll, function (deal) {
-        fillCommForm(deal);
-        // Offer to save the broker link so future imports are pre-filtered
-        if (showAll && deal.broker_id) {
-          setTimeout(function () {
-            if (confirm('Save broker ID "' + deal.broker_id + '" for this employee?\nFuture imports will only show their deals.')) {
-              saveLink(empId, deal.broker_id);
-            }
-          }, 300);
-        }
-      });
+    var button = anchor && anchor.classList && anchor.classList.contains('nd-import-btn') ? anchor : document.querySelector('.nd-import-btn');
+    var originalText = button ? button.textContent : '';
+    if (button) {
+      button.textContent = 'Loading deals...';
+      button.disabled = true;
+    }
+
+    var brokerId = await brokerIdFor(empId);
+    var showAll = !brokerId;
+    var now = new Date();
+    var deals;
+
+    if (brokerId) {
+      deals = (await fetchDealsYTD(brokerId, now.getFullYear())).filter(isCollected);
+      if (!deals.length) deals = (await fetchDealsYTD(brokerId, now.getFullYear() - 1)).filter(isCollected);
+    } else {
+      deals = (await fetchAllDealsYTD(now.getFullYear())).filter(isCollected);
+      if (!deals.length) deals = (await fetchAllDealsYTD(now.getFullYear() - 1)).filter(isCollected);
+    }
+
+    if (button) {
+      button.textContent = originalText || 'Select Deal Reference';
+      button.disabled = false;
+    }
+
+    showDealPicker(anchor, deals, showAll, function (deal) {
+      fillCommForm(deal);
+      if (showAll && deal.broker_id) {
+        setTimeout(function () {
+          if (confirm('Save broker ID "' + deal.broker_id + '" for this employee?\nFuture imports will only show their deals.')) {
+            saveLink(empId, deal.broker_id);
+          }
+        }, 300);
+      }
     });
   }
 
@@ -386,8 +570,11 @@
       { match: 'Deal Reference', value: (deal.property_name || deal.unit_no || '') +
           (deal.unit_no && deal.property_name ? ' — ' + deal.unit_no : '') +
           (deal._id ? ' [' + deal._id + ']' : '') },
-      { match: 'Client Name',      value: deal.client_name || '' },
-      { match: 'Property / Area',  value: deal.developer || ''   },
+      { match: 'Client Name',       value: deal.client_name || '' },
+      { match: 'Property / Area',   value: deal.developer || deal.property_name || deal.unit_no || '' },
+      { match: 'Property Value',    value: txAed(deal) ? String(Math.round(txAed(deal))) : '' },
+      { match: 'Commission Rate',   value: deal.commission_pct ? String(deal.commission_pct) : '' },
+      { match: 'Commission Amount', value: dealComm(deal) ? String(Math.round(dealComm(deal))) : '' },
     ];
 
     document.querySelectorAll('.form-group').forEach(function (g) {
@@ -458,15 +645,16 @@
 
     function buildRow(d) {
       var comm = dealComm(d);
+      var dealLink = ACCT_APP_URL + '/#/deals?id=' + d._id;
       return '<div class="nd-deal-row" style="padding:10px 14px;border-bottom:1px solid #f1f5f9;cursor:pointer" data-id="' + d._id + '">' +
         '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">' +
           '<div style="flex:1;min-width:0">' +
             '<div style="font-size:13px;font-weight:600;color:#0f172a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
-              (d.property_name || d.unit_no || '—') + '</div>' +
+              escapeHtml(d.property_name || d.unit_no || '-') + ' <a href="' + dealLink + '" target="_blank" style="font-size:10px;text-decoration:none" title="Open in Accounting">Open</a></div>' +
             '<div style="font-size:11px;color:#64748b;margin-top:2px">' +
-              (d.client_name || '') +
-              (d.created_at ? ' &nbsp;·&nbsp; ' + d.created_at : '') +
-              (showAll && d.broker_id ? ' &nbsp;·&nbsp; <span style="color:#3b82f6;font-weight:700">' + d.broker_id + '</span>' : '') +
+              escapeHtml(d.client_name || '') +
+              (d.created_at ? ' &nbsp;-&nbsp; ' + escapeHtml(d.created_at) : '') +
+              (showAll && d.broker_id ? ' &nbsp;-&nbsp; <span style="color:#3b82f6;font-weight:700">' + escapeHtml(d.broker_id) + '</span>' : '') +
             '</div>' +
           '</div>' +
           '<div style="text-align:right;flex-shrink:0">' +
@@ -488,7 +676,7 @@
           })
         : deals;
       if (!list.length) {
-        return '<div style="padding:28px;text-align:center;color:#94a3b8;font-size:13px">No deals match your search</div>';
+        return '<div style="padding:28px;text-align:center;color:#94a3b8;font-size:13px">No commission collected deals match your search</div>';
       }
       return list.map(buildRow).join('');
     }
@@ -497,7 +685,7 @@
 
     box.innerHTML =
       '<div style="padding:12px 14px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;align-items:center;flex-shrink:0">' +
-        '<span style="font-size:13px;font-weight:700;color:#0f172a">Select Deal to Import' +
+        '<span style="font-size:13px;font-weight:700;color:#0f172a">Select Commission Collected Deal' +
           (showAll ? ' <span style="font-size:11px;font-weight:400;color:#94a3b8">(all brokers)</span>' : '') +
         '</span>' +
         '<button id="nd-picker-close" type="button" style="background:none;border:none;cursor:pointer;color:#94a3b8;font-size:18px;line-height:1;padding:0">✕</button>' +
@@ -606,16 +794,19 @@
   }
 
   function buildPerfCard(empId, brokerId, monthDeals, ytdDeals, target, mo, yr) {
-    var moCollected = monthDeals.filter(isCollected).reduce(function (s, d) { return s + dealComm(d); }, 0);
-    var ytdCollected = ytdDeals.filter(isCollected).reduce(function (s, d) { return s + dealComm(d); }, 0);
-    var activeYTD = ytdDeals.filter(isActive).length;
+    var collectedMonthDeals = monthDeals.filter(isCollected);
+    var collectedYtdDeals = ytdDeals.filter(isCollected);
+    var moCollected = collectedMonthDeals.reduce(function (s, d) { return s + dealComm(d); }, 0);
+    var ytdCollected = collectedYtdDeals.reduce(function (s, d) { return s + dealComm(d); }, 0);
     var tPct = target ? Math.min(100, Math.round(moCollected / target * 100)) : null;
     var tColor = tPct === null ? '#94a3b8' : tPct >= 100 ? '#22c55e' : tPct >= 70 ? '#f59e0b' : '#ef4444';
 
-    var dealRows = monthDeals.slice(0, 6).map(function (d) {
+    var dealRows = collectedMonthDeals.slice(0, 6).map(function (d) {
+      var dealLink = ACCT_APP_URL + '/#/deals?id=' + d._id;
       return '<tr>' +
         '<td style="padding:5px 8px;font-size:12px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
-          (d.property_name || d.unit_no || '—') + '</td>' +
+          '<a href="' + dealLink + '" target="_blank" style="color:inherit;text-decoration:none;border-bottom:1px dotted #94a3b8" title="View in Accounting">' +
+          (d.property_name || d.unit_no || '—') + '</a></td>' +
         '<td style="padding:5px 8px">' + badge(d.stage) + '</td>' +
         '<td style="padding:5px 8px;font-size:12px;font-weight:700;text-align:right">' + fmtAed(dealComm(d)) + '</td>' +
       '</tr>';
@@ -629,9 +820,9 @@
       '</div>',
 
       '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:#e2e8f0">',
-        statCell('Month Deals', monthDeals.length, '#60a5fa'),
+        statCell('Month Deals', collectedMonthDeals.length, '#60a5fa'),
         statCell('Month Collected', fmtAed(moCollected), '#22c55e'),
-        statCell('YTD Deals', activeYTD, '#a78bfa'),
+        statCell('YTD Deals', collectedYtdDeals.length, '#a78bfa'),
         statCell('YTD Collected', fmtAed(ytdCollected), '#f59e0b'),
       '</div>',
 
@@ -658,8 +849,8 @@
       '</div>',
 
       '<div style="padding:10px 18px 16px;border-top:1px solid #e2e8f0">',
-        '<div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Deals this month</div>',
-        monthDeals.length
+        '<div style="font-size:10px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Commission collected deals this month</div>',
+        collectedMonthDeals.length
           ? '<table style="width:100%;border-collapse:collapse">' +
               '<thead><tr>' +
                 '<th style="text-align:left;font-size:10px;color:#94a3b8;padding:0 8px 5px;font-weight:600">Property</th>' +
@@ -668,7 +859,7 @@
               '</tr></thead>' +
               '<tbody>' + dealRows + '</tbody>' +
             '</table>'
-          : '<div style="color:#94a3b8;font-size:12px">No deals this month.</div>',
+          : '<div style="color:#94a3b8;font-size:12px">No commission collected deals this month.</div>',
       '</div>',
     ].join('');
   }
@@ -756,16 +947,15 @@
       var emp = empById[empId];
       if (!brokerId || !emp) return null;
       try {
-        var ytd = await fetchDealsYTD(brokerId, yr);
-        var mon = await fetchDeals(brokerId, mo, yr);
+        var ytd = (await fetchDealsYTD(brokerId, yr)).filter(isCollected);
+        var mon = (await fetchDeals(brokerId, mo, yr)).filter(isCollected);
         return {
           name:        emp.name,
           brokerId:    brokerId,
-          ytdCollected: ytd.filter(isCollected).reduce(function (s, d) { return s + dealComm(d); }, 0),
-          moCollected:  mon.filter(isCollected).reduce(function (s, d) { return s + dealComm(d); }, 0),
-          pipeline:     ytd.filter(function (d) { return !isCollected(d) && isActive(d); })
-                           .reduce(function (s, d) { return s + dealComm(d); }, 0),
-          deals:        ytd.filter(isActive).length,
+          ytdCollected: ytd.reduce(function (s, d) { return s + dealComm(d); }, 0),
+          moCollected:  mon.reduce(function (s, d) { return s + dealComm(d); }, 0),
+          pipeline:     0,
+          deals:        ytd.length,
         };
       } catch (e) { return null; }
     }));
@@ -786,11 +976,11 @@
             '</td>' +
             '<td style="padding:8px 6px">' +
               '<div style="font-size:13px;font-weight:600;color:#0f172a">' + r.name + '</div>' +
-              '<div style="font-size:10px;color:#94a3b8">' + r.brokerId + ' &nbsp;·&nbsp; ' + r.deals + ' active deals</div>' +
+              '<div style="font-size:10px;color:#94a3b8">' + r.brokerId + ' &nbsp;·&nbsp; ' + r.deals + ' collected deals</div>' +
             '</td>' +
             '<td style="padding:8px 12px;font-size:12px;text-align:right;color:#f59e0b;font-weight:600">' + fmtAed(r.moCollected) + '</td>' +
             '<td style="padding:8px 12px;font-size:12px;text-align:right;color:#22c55e;font-weight:700">' + fmtAed(r.ytdCollected) + '</td>' +
-            '<td style="padding:8px 12px;font-size:12px;text-align:right;color:#60a5fa">' + fmtAed(r.pipeline) + '</td>' +
+            '<td style="padding:8px 12px;font-size:12px;text-align:right;color:#60a5fa;font-weight:600">' + r.deals + '</td>' +
           '</tr>';
         }).join('')
       : '<tr><td colspan="5" style="padding:20px;text-align:center;color:#94a3b8;font-size:12px">No brokers linked yet — link broker IDs from employee detail pages</td></tr>';
@@ -806,7 +996,7 @@
           '<th style="padding:6px 6px;font-size:10px;color:#94a3b8;font-weight:600;text-align:left">BROKER</th>',
           '<th style="padding:6px 12px;font-size:10px;color:#94a3b8;font-weight:600;text-align:right">THIS MONTH</th>',
           '<th style="padding:6px 12px;font-size:10px;color:#94a3b8;font-weight:600;text-align:right">YTD COLLECTED</th>',
-          '<th style="padding:6px 12px;font-size:10px;color:#94a3b8;font-weight:600;text-align:right">PIPELINE</th>',
+          '<th style="padding:6px 12px;font-size:10px;color:#94a3b8;font-weight:600;text-align:right">COLLECTED DEALS</th>',
         '</tr></thead>',
         '<tbody>' + tableRows + '</tbody>',
       '</table></div>',
@@ -856,8 +1046,15 @@
     var rows = comms.length
       ? comms.map(function (c) {
           var sc = STATUS_COLOR[c.status] || '#94a3b8';
+          var dealText = c.deal || '—';
+          var dealIdMatch = dealText.match(/\[([^\]]+)\]/);
+          var dealCell = dealText;
+          if (dealIdMatch) {
+            var dealLink = ACCT_APP_URL + '/#/deals?id=' + dealIdMatch[1];
+            dealCell = '<a href="' + dealLink + '" target="_blank" style="color:inherit;text-decoration:none;border-bottom:1px dotted #94a3b8" title="View in Accounting">' + dealText + '</a>';
+          }
           return '<tr style="border-top:1px solid #f1f5f9">' +
-            '<td style="padding:7px 10px;font-size:12px;color:#0f172a;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (c.deal || '—') + '</td>' +
+            '<td style="padding:7px 10px;font-size:12px;color:#0f172a;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + dealCell + '</td>' +
             '<td style="padding:7px 10px;font-size:12px;color:#64748b">' + (c.client || '—') + '</td>' +
             '<td style="padding:7px 10px;font-size:12px;text-align:right;font-weight:700">' + fmtAed(c.amount || 0) + '</td>' +
             '<td style="padding:7px 10px;text-align:center">' +
@@ -1058,9 +1255,416 @@
   }
 
   // ── CLICK DELEGATION ──────────────────────────────────────────────────────────
+  // -- HR SYNC REPAIR ----------------------------------------------------------
+  // Links an existing HR commission to an accounting deal without changing money,
+  // payment, payroll, or deal-stage data.
+
+  function getDealPageYear() {
+    var values = Array.from(document.querySelectorAll('select')).map(function (sel) {
+      return String(sel.value || '');
+    });
+    var found = values.find(function (value) { return /^20\d{2}$/.test(value); });
+    if (found) return parseInt(found, 10);
+    var text = document.body ? document.body.innerText || '' : '';
+    var years = text.match(/\b20\d{2}\b/g);
+    return years && years.length ? parseInt(years[0], 10) : new Date().getFullYear();
+  }
+
+  function dealRowScore(row, deal) {
+    var text = normText(row.innerText || '');
+    var score = 0;
+    [
+      [deal.property_name, 30],
+      [deal.unit_no, 24],
+      [deal.client_name, 26],
+      [deal.broker_id, 22],
+      [deal.created_at, 18],
+      [deal.developer, 10]
+    ].forEach(function (pair) {
+      var value = normText(pair[0]);
+      if (value && text.indexOf(value) !== -1) score += pair[1];
+    });
+    var comm = Math.round(dealComm(deal));
+    if (comm && text.indexOf(String(comm)) !== -1) score += 12;
+    if (normText(deal.stage) === 'commission collected' && text.indexOf('missing') !== -1) score += 8;
+    return score;
+  }
+
+  function findDealForMissingRow(row, deals, linkedIds) {
+    var best = null;
+    var bestScore = 0;
+    deals.forEach(function (deal) {
+      if (!deal._id || linkedIds.has(deal._id)) return;
+      var score = dealRowScore(row, deal);
+      if (score > bestScore) {
+        best = deal;
+        bestScore = score;
+      }
+    });
+    return bestScore >= 45 ? best : null;
+  }
+
+  function isDealsPage() {
+    var title = document.querySelector('.page-title');
+    if (title && /deals/i.test(title.textContent || '')) return true;
+    var text = document.body ? document.body.innerText || '' : '';
+    return /HR Sync/i.test(text) && /Commission Collected/i.test(text);
+  }
+
+  async function injectDealSyncActions() {
+    if (!isDealsPage()) return;
+    if (!acctDb || dealSyncBusy) return;
+
+    var rows = Array.from(document.querySelectorAll('tbody tr')).filter(function (row) {
+      return /missing/i.test(row.innerText || '') && !row.querySelector('.nd-sync-link-btn');
+    });
+    if (!rows.length) return;
+
+    dealSyncBusy = true;
+    try {
+      var year = getDealPageYear();
+      var deals = (await fetchAllDealsYTD(year)).filter(isCollected);
+      var linked = await linkedDealIdsFromHr();
+
+      rows.forEach(function (row) {
+        var deal = findDealForMissingRow(row, deals, linked);
+        if (!deal) return;
+        var cell = row.cells && row.cells.length ? row.cells[row.cells.length - 1] : null;
+        if (!cell || cell.querySelector('.nd-sync-link-btn')) return;
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'nd-sync-link-btn';
+        btn.setAttribute('data-dealid', deal._id);
+        btn.style.cssText = [
+          'margin-top:6px;padding:4px 8px;border:1px solid #f59e0b',
+          'background:#fffbeb;color:#92400e;border-radius:6px',
+          'font-size:10px;font-weight:800;cursor:pointer;display:block'
+        ].join(';');
+        btn.textContent = 'Link paid commission';
+        btn._nasamaDeal = deal;
+        cell.appendChild(btn);
+      });
+    } catch (e) {
+      console.warn('[NasamaDeals] injectDealSyncActions:', e.message);
+    } finally {
+      dealSyncBusy = false;
+    }
+  }
+
+  async function injectDealSyncPanel() {
+    var old = document.getElementById('nd-sync-panel');
+    if (!isDealsPage()) {
+      if (old) old.remove();
+      return;
+    }
+    if (old || !acctDb) return;
+
+    var host = document.querySelector('.content') || document.querySelector('main') || document.body;
+    var panel = document.createElement('div');
+    panel.id = 'nd-sync-panel';
+    panel.style.cssText = [
+      'margin:0 0 14px;padding:12px 14px;border:1px solid #fde68a',
+      'background:#fffbeb;border-radius:8px;color:#78350f'
+    ].join(';');
+    panel.innerHTML =
+      '<div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">' +
+        '<div>' +
+          '<div style="font-size:13px;font-weight:900">HR Sync Repair</div>' +
+          '<div id="nd-sync-panel-status" style="font-size:11px;margin-top:2px;color:#92400e">Checking commission collected deals with missing HR links...</div>' +
+        '</div>' +
+        '<button id="nd-sync-refresh" type="button" style="padding:6px 10px;border:1px solid #f59e0b;background:#fff7ed;color:#92400e;border-radius:6px;font-size:11px;font-weight:800;cursor:pointer">Refresh</button>' +
+      '</div>' +
+      '<div id="nd-sync-panel-list" style="margin-top:10px;max-height:420px;overflow-y:auto"></div>';
+    host.insertBefore(panel, host.firstChild);
+
+    async function render() {
+      var status = panel.querySelector('#nd-sync-panel-status');
+      var list = panel.querySelector('#nd-sync-panel-list');
+      status.textContent = 'Checking commission collected deals with missing HR links...';
+      list.innerHTML = '';
+      try {
+        var missing = await detectCommissionGaps();
+        if (!missing.length) {
+          status.textContent = 'No missing HR links found for commission collected deals this year.';
+          return;
+        }
+        status.textContent = missing.length + ' commission collected deal(s) need an HR commission link.';
+        list.innerHTML = missing.map(function (deal) {
+          return '<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;border-top:1px solid #fde68a;padding:8px 0">' +
+            '<div style="min-width:0">' +
+              '<div style="font-size:12px;font-weight:800;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
+                escapeHtml(getDealLabel(deal)) + '</div>' +
+              '<div style="font-size:11px;color:#92400e">' +
+                escapeHtml(deal.client_name || '') + ' - ' + escapeHtml(deal.broker_id || '') + ' - ' + fmtAed(dealComm(deal)) +
+              '</div>' +
+            '</div>' +
+            '<button class="nd-sync-panel-btn" data-dealid="' + escapeHtml(deal._id) + '" type="button" style="flex-shrink:0;padding:5px 9px;border:1px solid #f59e0b;background:#fff;color:#92400e;border-radius:6px;font-size:10px;font-weight:800;cursor:pointer">Link paid commission</button>' +
+          '</div>';
+        }).join('');
+        list.querySelectorAll('.nd-sync-panel-btn').forEach(function (btn) {
+          var deal = missing.find(function (d) { return d._id === btn.getAttribute('data-dealid'); });
+          btn._nasamaDeal = deal;
+        });
+      } catch (e) {
+        status.textContent = 'Could not check missing HR links: ' + e.message;
+      }
+    }
+
+    panel.querySelector('#nd-sync-refresh').addEventListener('click', function () {
+      dealsCache = {};
+      render();
+    });
+    render();
+  }
+
+  function commissionAmount(comm) {
+    return parseMoney(
+      comm.commissionAmount != null ? comm.commissionAmount :
+      comm.amount != null ? comm.amount :
+      comm.commission != null ? comm.commission :
+      comm.bonus != null ? comm.bonus :
+      comm.total != null ? comm.total : ''
+    );
+  }
+
+  function employeeIdForDeal(deal, links) {
+    var brokerId = String(deal.broker_id || '');
+    if (!brokerId) return '';
+    return Object.keys(links || {}).find(function (empId) {
+      return links[empId] && String(links[empId].brokerAcctId || '') === brokerId;
+    }) || '';
+  }
+
+  function scoreCommissionCandidate(comm, deal, empId) {
+    var score = 0;
+    var notes = [];
+    var commEmp = String(comm.employeeId || comm.empId || comm.employee || '');
+    if (empId && commEmp === empId) { score += 50; notes.push('employee'); }
+
+    var target = dealComm(deal);
+    var amount = commissionAmount(comm);
+    if (target && amount) {
+      var diff = Math.abs(target - amount);
+      var tolerance = Math.max(5, target * 0.02);
+      if (diff <= tolerance) { score += 35; notes.push('amount'); }
+      else if (diff <= Math.max(50, target * 0.08)) { score += 15; notes.push('near amount'); }
+    }
+
+    var dealText = normText((comm.deal || '') + ' ' + (comm.clientName || '') + ' ' + (comm.property || ''));
+    var client = normText(deal.client_name);
+    var property = normText((deal.property_name || '') + ' ' + (deal.unit_no || ''));
+    if (client && dealText.indexOf(client) !== -1) { score += 20; notes.push('client'); }
+    if (property && property.split(' ').some(function (part) { return part.length > 2 && dealText.indexOf(part) !== -1; })) {
+      score += 14;
+      notes.push('property');
+    }
+
+    var commMonth = monthKey(comm.month || getCommissionDate(comm));
+    var dealMonth = monthKey(deal.created_at);
+    if (commMonth && dealMonth && commMonth === dealMonth) { score += 10; notes.push('month'); }
+    if (isClosedCommission(comm)) { score += 8; notes.push('closed'); }
+
+    return { score: score, notes: notes.join(', ') || 'manual review' };
+  }
+
+  async function commissionCandidatesForDeal(deal) {
+    var links = await getLinks();
+    var empId = employeeIdForDeal(deal, links);
+    var list = await loadCommRecs();
+    var unlinked = list.filter(function (comm) {
+      var id = commLinkedDealId(comm);
+      return !id || id === deal._id;
+    });
+    return unlinked.filter(isClosedCommission).map(function (comm) {
+      var match = scoreCommissionCandidate(comm, deal, empId);
+      return Object.assign({ _matchScore: match.score, _matchNotes: match.notes }, comm);
+    }).sort(function (a, b) { return b._matchScore - a._matchScore; });
+  }
+
+  function commissionSearchText(comm) {
+    return normText([
+      comm.deal,
+      comm.client,
+      comm.clientName,
+      comm.property,
+      comm.employeeId,
+      comm.empId,
+      comm.employee,
+      comm.status,
+      comm.month,
+      getCommissionDate(comm),
+      commissionAmount(comm)
+    ].join(' '));
+  }
+
+  async function saveExistingCommissionDealLink(comm, deal) {
+    if (!comm || comm._key == null) throw new Error('Cannot locate the selected commission record.');
+    var existingId = commLinkedDealId(comm);
+    if (existingId && existingId !== deal._id) {
+      throw new Error('This commission is already linked to another accounting deal.');
+    }
+    var db = hrDb();
+    if (!db) throw new Error('HR database is not available.');
+
+    var now = new Date().toISOString();
+    var baseDeal = stripDealSuffix(comm.deal) || getDealLabel(deal);
+    var update = {
+      deal: baseDeal + ' [' + deal._id + ']',
+      accountingDealId: deal._id,
+      accountingDealRef: deal._id,
+      accountingLinkedAt: now,
+      accountingLinkSource: 'manual_hr_sync'
+    };
+
+    await db.ref(HR_ROOT + '/commRecs/' + comm._key).update(update);
+    updateLocalCommRec(comm, update);
+    await writeAuditEntry(
+      'LINK_EXISTING_COMMISSION_TO_DEAL',
+      'Linked existing HR commission ' + (comm.id || comm._id || comm._key) + ' to accounting deal ' + deal._id,
+      comm.employeeId || comm.empId || ''
+    );
+  }
+
+  function renderCommissionCandidate(comm) {
+    var amount = commissionAmount(comm);
+    var status = comm.status || 'unknown';
+    var emp = comm.employeeId || comm.empId || comm.employee || '';
+    return '<div class="nd-comm-row" data-key="' + escapeHtml(comm._key) + '" style="padding:10px 12px;border-bottom:1px solid #f1f5f9;cursor:pointer">' +
+      '<div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start">' +
+        '<div style="min-width:0;flex:1">' +
+          '<div style="font-size:12px;font-weight:800;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
+            escapeHtml(stripDealSuffix(comm.deal) || 'Commission record') + '</div>' +
+          '<div style="font-size:11px;color:#64748b;margin-top:2px">' +
+            escapeHtml(emp) + ' - ' + escapeHtml(status) + ' - ' + escapeHtml(getCommissionDate(comm) || comm.month || '') +
+          '</div>' +
+          '<div style="font-size:10px;color:#64748b;margin-top:3px">Match: ' +
+            escapeHtml(comm._matchNotes) + '</div>' +
+        '</div>' +
+        '<div style="text-align:right;flex-shrink:0">' +
+          '<div style="font-size:12px;font-weight:800;color:#0f172a">' + fmtAed(amount) + '</div>' +
+          '<div style="font-size:10px;color:#64748b">score ' + Math.round(comm._matchScore || 0) + '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function showCommissionLinkPicker(deal, anchor) {
+    var old = document.getElementById('nd-comm-link-picker');
+    if (old) old.remove();
+
+    var box = document.createElement('div');
+    box.id = 'nd-comm-link-picker';
+    box.style.cssText = [
+      'position:fixed;z-index:100001;background:#fff;border-radius:12px',
+      'box-shadow:0 12px 44px rgba(15,23,42,0.22);border:1px solid #e2e8f0',
+      'width:520px;max-height:560px;overflow:hidden;display:flex;flex-direction:column'
+    ].join(';');
+    var r = anchor.getBoundingClientRect();
+    box.style.top = Math.min(r.bottom + 8, window.innerHeight - 570) + 'px';
+    box.style.left = Math.min(r.left, window.innerWidth - 540) + 'px';
+    box.innerHTML =
+      '<div style="padding:12px 14px;border-bottom:1px solid #f1f5f9;display:flex;justify-content:space-between;gap:12px">' +
+        '<div style="min-width:0">' +
+          '<div style="font-size:13px;font-weight:900;color:#0f172a">Link Existing Paid Commission</div>' +
+          '<div style="font-size:11px;color:#64748b;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
+            escapeHtml(getDealLabel(deal)) + ' - ' + escapeHtml(deal.client_name || '') + ' - ' + fmtAed(dealComm(deal)) +
+          '</div>' +
+        '</div>' +
+        '<button id="nd-comm-close" type="button" style="background:none;border:none;cursor:pointer;color:#94a3b8;font-size:18px;line-height:1;padding:0">x</button>' +
+      '</div>' +
+      '<div style="padding:10px 14px;background:#fffbeb;border-bottom:1px solid #fde68a;font-size:11px;color:#92400e;line-height:1.45">' +
+        'This repair only adds the accounting deal reference to an existing HR commission. It does not change amount, status, payment date, or payroll records.' +
+      '</div>' +
+      '<div style="padding:8px 12px;border-bottom:1px solid #f1f5f9">' +
+        '<input id="nd-comm-search" placeholder="Search all eligible commissions..." autocomplete="off" ' +
+          'style="width:100%;padding:7px 10px;border:1px solid #e2e8f0;border-radius:8px;font-size:12px;box-sizing:border-box;outline:none">' +
+      '</div>' +
+      '<div id="nd-comm-list" style="overflow-y:auto;flex:1;padding:4px 0">' +
+        '<div style="padding:28px;text-align:center;color:#64748b;font-size:13px">Loading existing HR commissions...</div>' +
+      '</div>';
+    document.body.appendChild(box);
+
+    box.querySelector('#nd-comm-close').addEventListener('click', function () { box.remove(); });
+
+    try {
+      var candidates = await commissionCandidatesForDeal(deal);
+      var listEl = box.querySelector('#nd-comm-list');
+      if (!candidates.length) {
+        listEl.innerHTML = '<div style="padding:28px;text-align:center;color:#94a3b8;font-size:13px">No unlinked paid, approved, or settled HR commission records were found.</div>';
+      } else {
+        function renderCandidates(query) {
+          var q = normText(query);
+          var visible = q ? candidates.filter(function (comm) {
+            return commissionSearchText(comm).indexOf(q) !== -1;
+          }) : candidates;
+          if (!visible.length) {
+            listEl.innerHTML = '<div style="padding:28px;text-align:center;color:#94a3b8;font-size:13px">No eligible commissions match your search.</div>';
+            return;
+          }
+          listEl.innerHTML =
+            '<div style="padding:6px 12px 8px;font-size:11px;color:#64748b">Showing ' +
+              visible.length + ' of ' + candidates.length + ' eligible paid/approved/settled commissions</div>' +
+            visible.map(renderCommissionCandidate).join('');
+          listEl.querySelectorAll('.nd-comm-row').forEach(function (row) {
+            row.addEventListener('mouseenter', function () { row.style.background = '#f8fafc'; });
+            row.addEventListener('mouseleave', function () { row.style.background = ''; });
+            row.addEventListener('click', async function () {
+              var comm = visible.find(function (item) { return String(item._key) === row.getAttribute('data-key'); });
+              if (!comm) return;
+              var ok = confirm(
+                'Link this existing HR commission to accounting deal ' + deal._id + '?\n\n' +
+                'Only the deal reference metadata will be updated. Amount, status, payment date, and payroll stay unchanged.'
+              );
+              if (!ok) return;
+              row.style.opacity = '0.55';
+              try {
+                await saveExistingCommissionDealLink(comm, deal);
+                box.remove();
+                alert('Commission linked successfully. The page will refresh so HR Sync can recalculate.');
+                setTimeout(function () { window.location.reload(); }, 250);
+              } catch (e) {
+                alert('Could not link commission: ' + e.message);
+                row.style.opacity = '';
+              }
+            });
+          });
+        }
+        renderCandidates('');
+        box.querySelector('#nd-comm-search').addEventListener('input', function (e) {
+          renderCandidates(e.target.value);
+        });
+      }
+    } catch (e) {
+      box.querySelector('#nd-comm-list').innerHTML =
+        '<div style="padding:28px;text-align:center;color:#b91c1c;font-size:13px">Could not load HR commissions: ' +
+        escapeHtml(e.message) + '</div>';
+    }
+
+    setTimeout(function () {
+      document.addEventListener('click', function close(e) {
+        if (!box.contains(e.target) && e.target !== anchor) {
+          box.remove();
+          document.removeEventListener('click', close);
+        }
+      });
+    }, 100);
+  }
+
   document.addEventListener('click', function (e) {
     var btn = e.target.closest('.nd-link-btn');
     if (btn) showLinkPopup(btn.getAttribute('data-empid'), btn);
+    var syncBtn = e.target.closest('.nd-sync-link-btn');
+    if (syncBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      showCommissionLinkPicker(syncBtn._nasamaDeal || { _id: syncBtn.getAttribute('data-dealid') }, syncBtn);
+    }
+    var panelBtn = e.target.closest('.nd-sync-panel-btn');
+    if (panelBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      showCommissionLinkPicker(panelBtn._nasamaDeal || { _id: panelBtn.getAttribute('data-dealid') }, panelBtn);
+    }
   });
 
   // ── OBSERVER & START ──────────────────────────────────────────────────────────
@@ -1073,6 +1677,8 @@
       injectPerfCard();
       injectLeaderboard();
       injectPayrollHint();
+      injectDealSyncPanel();
+      injectDealSyncActions();
     }, 150);
   });
 
@@ -1092,6 +1698,8 @@
     injectPerfCard();
     injectLeaderboard();
     injectPayrollHint();
+    injectDealSyncPanel();
+    injectDealSyncActions();
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
@@ -1104,6 +1712,7 @@
     saveLink: saveLink,
     saveTarget: saveTarget,
     detectCommissionGaps: detectCommissionGaps,
+    linkExistingCommissionToDeal: saveExistingCommissionDealLink,
     clearCache: function () { dealsCache = {}; linksCache = null; empsCache = null; }
   };
 })();

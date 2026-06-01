@@ -79,22 +79,47 @@
   function hrFs() { var a = findHrApp(); try { return a ? a.firestore() : null; } catch (e) { return null; } }
 
   // ── DEAL QUERIES ──────────────────────────────────────────────────────────────
+  // NOTE: We deliberately avoid combining a broker_id equality filter with a
+  // created_at range in the same Firestore query — that needs a composite index
+  // which isn't deployed, so it throws and silently returns nothing. Instead we
+  // query by broker_id only (single-field index, always present) and filter the
+  // year/month in JS. The deals collection is tiny (<100 docs), so this is cheap.
+
+  // created_at may be an ISO string, an epoch number, or a Firestore Timestamp.
+  function dealDate(d) {
+    var c = d && d.created_at;
+    if (!c) return null;
+    if (typeof c === 'string') { var t = Date.parse(c); return isNaN(t) ? null : new Date(t); }
+    if (typeof c === 'number') return new Date(c);
+    if (typeof c.toDate === 'function') return c.toDate();
+    if (c.seconds != null) return new Date(c.seconds * 1000);
+    return null;
+  }
+  // Undated deals are kept in year results (so nothing silently disappears),
+  // but excluded from a specific-month result where a date is required.
+  function dealMatchesYear(d, year) {
+    var dt = dealDate(d);
+    return dt ? dt.getFullYear() === year : true;
+  }
+  function dealMatchesMonth(d, year, month) {
+    var dt = dealDate(d);
+    return dt ? (dt.getFullYear() === year && dt.getMonth() + 1 === month) : false;
+  }
+
   async function fetchDeals(brokerId, month, year) {
     if (!acctDb) return [];
     var key = brokerId + '-' + year + '-' + month;
     var hit = dealsCache[key];
     if (hit && Date.now() - hit.ts < CACHE_TTL) return hit.data;
-    var pad = function (n) { return String(n).padStart(2, '0'); };
-    var start = year + '-' + pad(month) + '-01';
-    var end = year + '-' + pad(month) + '-' + pad(new Date(year, month, 0).getDate());
     try {
       var snap = await acctDb.collection('deals')
         .where('broker_id', '==', brokerId)
-        .where('created_at', '>=', start)
-        .where('created_at', '<=', end)
         .get();
       var data = [];
-      snap.forEach(function (d) { data.push(Object.assign({ _id: d.id }, d.data())); });
+      snap.forEach(function (d) {
+        var o = Object.assign({ _id: d.id }, d.data());
+        if (dealMatchesMonth(o, year, month)) data.push(o);
+      });
       data.sort(function (a, b) { return (b.created_at || '') < (a.created_at || '') ? -1 : 1; });
       dealsCache[key] = { data: data, ts: Date.now() };
       return data;
@@ -112,11 +137,13 @@
     try {
       var snap = await acctDb.collection('deals')
         .where('broker_id', '==', brokerId)
-        .where('created_at', '>=', year + '-01-01')
-        .where('created_at', '<=', year + '-12-31')
         .get();
       var data = [];
-      snap.forEach(function (d) { data.push(Object.assign({ _id: d.id }, d.data())); });
+      snap.forEach(function (d) {
+        var o = Object.assign({ _id: d.id }, d.data());
+        if (dealMatchesYear(o, year)) data.push(o);
+      });
+      data.sort(function (a, b) { return (b.created_at || '') < (a.created_at || '') ? -1 : 1; });
       dealsCache[key] = { data: data, ts: Date.now() };
       return data;
     } catch (e) {
@@ -131,12 +158,12 @@
     var hit = dealsCache[key];
     if (hit && Date.now() - hit.ts < CACHE_TTL) return hit.data;
     try {
-      var snap = await acctDb.collection('deals')
-        .where('created_at', '>=', year + '-01-01')
-        .where('created_at', '<=', year + '-12-31')
-        .get();
+      var snap = await acctDb.collection('deals').get();
       var data = [];
-      snap.forEach(function (d) { data.push(Object.assign({ _id: d.id }, d.data())); });
+      snap.forEach(function (d) {
+        var o = Object.assign({ _id: d.id }, d.data());
+        if (dealMatchesYear(o, year)) data.push(o);
+      });
       data.sort(function (a, b) { return (b.created_at || '') < (a.created_at || '') ? -1 : 1; });
       dealsCache[key] = { data: data, ts: Date.now() };
       return data;

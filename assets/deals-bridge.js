@@ -1707,7 +1707,6 @@
       payrollFormDone = false;
       injectCommForm();
       injectPerfCard();
-      injectLeaderboard();
       injectPayrollHint();
       injectDealSyncPanel();
       injectDealSyncActions();
@@ -1728,7 +1727,6 @@
     observer.observe(document.body, { childList: true, subtree: true });
     injectCommForm();
     injectPerfCard();
-    injectLeaderboard();
     injectPayrollHint();
     injectDealSyncPanel();
     injectDealSyncActions();

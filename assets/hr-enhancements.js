@@ -14,10 +14,40 @@
   var bellLoaded = false;
 
   // ── FIREBASE / SESSION ───────────────────────────────────────────────────────
+  // The main app uses the modular Firebase SDK, so there is NO compat '[DEFAULT]'
+  // app on window.firebase. We resolve (or create) a compat app on the nasama-hr
+  // project by project ID — same approach/name as deals-bridge.js, so they share one.
+  var HR_CFG = {
+    apiKey: 'AIzaSyAqkLr-uJKIE8uW8zrgqlMpte0KfGPnOBM',
+    authDomain: 'nasama-hr.firebaseapp.com',
+    databaseURL: 'https://nasama-hr-default-rtdb.firebaseio.com',
+    projectId: 'nasama-hr',
+    storageBucket: 'nasama-hr.firebasestorage.app'
+  };
+  var HR_APP_NAME = 'nasama-hr-bridge';
+
+  function hrApp() {
+    if (!window.firebase || !window.firebase.initializeApp) return null;
+    try {
+      var def = window.firebase.app();
+      if (def && def.options && def.options.projectId === 'nasama-hr') return def;
+    } catch (e) {}
+    var existing = (window.firebase.apps || []).find(function (a) {
+      return a.options && a.options.projectId === 'nasama-hr';
+    });
+    if (existing) return existing;
+    try { return window.firebase.initializeApp(HR_CFG, HR_APP_NAME); }
+    catch (e) { return null; }
+  }
+
   function hrDb() {
-    var app = window.firebase && window.firebase.apps &&
-      window.firebase.apps.find(function (a) { return a.name === '[DEFAULT]'; });
-    return app ? app.database() : null;
+    var app = hrApp();
+    try { return app ? app.database() : null; } catch (e) { return null; }
+  }
+
+  function hrStorage() {
+    var app = hrApp();
+    try { return app ? app.storage() : null; } catch (e) { return null; }
   }
 
   function getSession() {
@@ -205,6 +235,7 @@
     var editable = isAdmin();
     var rows = DOC_TYPES.map(function (dt) {
       var expiry = docs[dt.key] || '';
+      var fileUrl = docs[dt.key + '_url'] || '';
       var days   = daysUntil(expiry);
       var st     = expiryStatus(days);
       return (
@@ -214,12 +245,20 @@
             '<div style="font-size:11px;color:' + st.color + ';margin-top:1px">' + st.text + '</div>' +
           '</div>' +
           '<div style="display:flex;align-items:center;gap:10px;flex-shrink:0">' +
+            (fileUrl
+              ? '<a href="' + fileUrl + '" target="_blank" title="View Document" style="text-decoration:none;font-size:14px;filter:grayscale(1)">👁️</a>'
+              : '') +
             '<span style="font-size:12px;color:#64748b">' + fmtDate(expiry) + '</span>' +
             (editable
               ? '<button type="button" class="nhe-edit-doc" ' +
                   'data-key="' + dt.key + '" data-label="' + dt.label + '" data-val="' + expiry + '" ' +
                   'style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid #e2e8f0;' +
-                  'background:none;cursor:pointer;color:#64748b">Edit</button>'
+                  'background:none;cursor:pointer;color:#64748b">Edit</button>' +
+                '<button type="button" class="nhe-upload-doc" ' +
+                  'data-key="' + dt.key + '" data-label="' + dt.label + '" ' +
+                  'title="Upload scan/photo" ' +
+                  'style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid #3b82f6;' +
+                  'background:#eff6ff;cursor:pointer;color:#1d4ed8">⬆️</button>'
               : '') +
           '</div>' +
         '</div>'
@@ -250,6 +289,36 @@
         );
       });
     });
+
+    card.querySelectorAll('.nhe-upload-doc').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var key = btn.getAttribute('data-key');
+        var input = document.createElement('input');
+        input.type = 'file';
+        input.accept = 'image/*,.pdf';
+        input.onchange = async function (e) {
+          var file = e.target.files[0];
+          if (!file) return;
+          
+          btn.textContent = '...';
+          btn.disabled = true;
+          
+          var storage = hrStorage();
+          if (!storage) { alert("Firebase Storage SDK not loaded."); return; }
+          
+          try {
+            var ref = storage.ref(HR_ROOT + '/docs/' + empId + '/' + key);
+            var snap = await ref.put(file);
+            var url = await snap.ref.getDownloadURL();
+            var updated = await getDocs(empId);
+            updated[key + '_url'] = url;
+            await setDocs(empId, updated);
+            renderDocCard(card, empId, updated);
+          } catch (err) { alert("Upload failed: " + err.message); btn.textContent = '⬆️'; btn.disabled = false; }
+        };
+        input.click();
+      });
+    });
   }
 
   function showDocPopup(empId, key, label, current, docs, onSave) {
@@ -273,6 +342,341 @@
       box.remove();
       onSave(updated);
     });
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // DOCUMENT FILE STORAGE — base64 in the Realtime Database (free, no Cloud Storage)
+  // Firebase Storage needs the paid Blaze plan, so we keep files in the RTDB under a
+  // SEPARATE path (employee_files) — never employee_docs — so the notification bell's
+  // bulk read of expiry data stays light. Images are downscaled to keep payloads small.
+  // ════════════════════════════════════════════════════════════════════════════
+  var filesCache = {};
+  var MAX_FILE_BYTES = 3 * 1024 * 1024; // cap on the stored (post-compression) payload
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  async function getFiles(empId) {
+    var hit = filesCache[empId];
+    if (hit && Date.now() - hit.ts < CACHE_TTL) return hit.data;
+    var db = hrDb(); if (!db) return {};
+    try {
+      var snap = await db.ref(HR_ROOT + '/employee_files/' + empId).once('value');
+      var data = snap.val() || {};
+      filesCache[empId] = { data: data, ts: Date.now() };
+      return data;
+    } catch (e) { return {}; }
+  }
+
+  async function setFileRecord(empId, key, rec) {
+    var db = hrDb(); if (!db) throw new Error('HR database is not available.');
+    await db.ref(HR_ROOT + '/employee_files/' + empId + '/' + key).set(rec);
+    filesCache[empId] = null; // invalidate
+  }
+
+  function readAsDataUrl(file) {
+    return new Promise(function (resolve, reject) {
+      var fr = new FileReader();
+      fr.onload  = function () { resolve(fr.result); };
+      fr.onerror = function () { reject(new Error('Could not read the file.')); };
+      fr.readAsDataURL(file);
+    });
+  }
+
+  // Downscale + re-encode images as JPEG to shrink the base64; non-images pass through.
+  function compressImage(file, maxDim, quality) {
+    return new Promise(function (resolve, reject) {
+      var fr = new FileReader();
+      fr.onload = function () {
+        var img = new Image();
+        img.onload = function () {
+          var scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+          var cw = Math.round(img.width * scale), ch = Math.round(img.height * scale);
+          var canvas = document.createElement('canvas');
+          canvas.width = cw; canvas.height = ch;
+          canvas.getContext('2d').drawImage(img, 0, 0, cw, ch);
+          try { resolve(canvas.toDataURL('image/jpeg', quality)); }
+          catch (e) { reject(e); }
+        };
+        img.onerror = function () { reject(new Error('Could not load the image.')); };
+        img.src = fr.result;
+      };
+      fr.onerror = function () { reject(new Error('Could not read the image.')); };
+      fr.readAsDataURL(file);
+    });
+  }
+
+  function dataUrlBytes(dataUrl) {
+    var i = dataUrl.indexOf(',');
+    return Math.ceil((dataUrl.length - i - 1) * 3 / 4);
+  }
+
+  // Chrome blocks navigating to data: URLs, so open via a Blob object URL instead.
+  function openStoredFile(dataUrl) {
+    try {
+      var parts = dataUrl.split(',');
+      var mime = (parts[0].match(/:(.*?);/) || [])[1] || 'application/octet-stream';
+      var bin = atob(parts[1]);
+      var arr = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      var url = URL.createObjectURL(new Blob([arr], { type: mime }));
+      window.open(url, '_blank');
+      setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
+    } catch (e) { alert('Could not open file: ' + ((e && e.message) || e)); }
+  }
+
+  // Reads + (for images) compresses a File into a storable record, enforcing the size cap.
+  async function buildFileRecord(file) {
+    var isImage = /^image\//.test(file.type);
+    var dataUrl = isImage ? await compressImage(file, 1400, 0.8) : await readAsDataUrl(file);
+    if (dataUrlBytes(dataUrl) > MAX_FILE_BYTES) {
+      throw new Error('File is too large (' + (Math.round(dataUrlBytes(dataUrl) / 1048576 * 10) / 10) +
+        ' MB after compression). ' + (isImage ? 'Use a smaller image.' : 'PDFs must be under ~3 MB.'));
+    }
+    return { data: dataUrl, name: file.name, type: file.type || '', ts: Date.now() };
+  }
+
+  async function saveEmployeeDoc(empId, key, file) {
+    var rec = await buildFileRecord(file);
+    await setFileRecord(empId, key, rec);
+    return rec;
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // FEATURE 1b — UPLOAD ON THE MAIN APP'S "DOCUMENT EXPIRY" CARD
+  // Injects an upload (⬆️) + view (👁️) button into each row of the read-only card.
+  // ════════════════════════════════════════════════════════════════════════════
+  var DOC_EXPIRY_KEYS = {
+    'visa':        'visa',
+    'contract':    'contract',
+    'passport':    'passport',
+    'emirates id': 'eid_front',
+    'rera':        'rera',
+  };
+
+  async function enhanceDocExpiryCard() {
+    // No isAdmin() gate: the main app only renders this card for authorized users,
+    // and Firebase Storage rules are the real security boundary. (The old check read
+    // a session key the app doesn't use, so it always failed and hid the buttons.)
+    var empName = getDetailEmpName();
+    if (!empName) return;
+
+    // Locate the main app's Document Expiry card by its title text
+    var card = null;
+    document.querySelectorAll('.card-title').forEach(function (t) {
+      if (!card && /Document Expiry/i.test(t.textContent || '')) card = t.closest('.card');
+    });
+    if (!card) return;
+
+    // Each row has a bold label leaf node (Visa / Contract / …). The label is a <div>
+    // on "Not set" rows and a <span> on dated rows, at different depths — so we match
+    // either element and walk up to the row (nearest ancestor with a border-bottom).
+    var pending = [];
+    card.querySelectorAll('div, span').forEach(function (el) {
+      if (el.children.length) return;
+      var key = DOC_EXPIRY_KEYS[(el.textContent || '').trim().toLowerCase()];
+      if (!key) return;
+      var row = el.closest('[style*="border-bottom"]');
+      if (!row || row.querySelector('.nhe-doc-up')) return;
+      pending.push({ row: row, key: key });
+    });
+    if (!pending.length) return; // already wired, or card not ready
+
+    var emps = await loadAllEmps();
+    var emp  = emps.find(function (e) { return e.name === empName; });
+    if (!emp) return;
+    var files = await getFiles(emp.id);
+
+    pending.forEach(function (p) {
+      if (p.row.querySelector('.nhe-doc-up')) return;
+      addDocUploadControls(p.row, p.key, emp.id, files);
+    });
+  }
+
+  function addDocUploadControls(row, key, empId, files) {
+    var rec = files[key] || null;
+
+    var wrap = document.createElement('div');
+    wrap.className = 'nhe-doc-up';
+    wrap.style.cssText = 'display:flex;align-items:center;gap:6px;margin-left:10px;flex-shrink:0';
+
+    var view = document.createElement('button');
+    view.type = 'button';
+    view.className = 'nhe-doc-view';
+    view.title = 'View uploaded document';
+    view.textContent = '👁️';
+    view.style.cssText = 'background:none;border:none;padding:0;font-size:14px;cursor:pointer;' +
+      (rec && rec.data ? '' : 'display:none');
+    view.addEventListener('click', function () { if (rec && rec.data) openStoredFile(rec.data); });
+
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.title = 'Upload scan / photo';
+    btn.textContent = '⬆️';
+    btn.style.cssText = 'font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid #3b82f6;' +
+      'background:#eff6ff;cursor:pointer;color:#1d4ed8;line-height:1';
+
+    btn.addEventListener('click', function () {
+      var input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*,.pdf';
+      input.onchange = async function (e) {
+        var file = e.target.files && e.target.files[0];
+        if (!file) return;
+        var prev = btn.textContent;
+        btn.textContent = '⏳'; btn.disabled = true;
+        try {
+          rec = await saveEmployeeDoc(empId, key, file);
+          files[key] = rec;
+          view.style.display = '';
+          btn.textContent = '✓';
+          setTimeout(function () { btn.textContent = '⬆️'; btn.disabled = false; }, 1500);
+          refreshDocumentsCard(empId);
+        } catch (err) {
+          alert('Upload failed: ' + ((err && err.message) || err));
+          btn.textContent = prev; btn.disabled = false;
+        }
+      };
+      input.click();
+    });
+
+    wrap.appendChild(view);
+    wrap.appendChild(btn);
+    row.appendChild(wrap);
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // FEATURE 1c — DOCUMENTS GALLERY CARD
+  // A dedicated "Documents" subsection on the employee page showing the uploaded
+  // file for each document (image preview or PDF link), with upload / replace.
+  // ════════════════════════════════════════════════════════════════════════════
+  var DOCUMENT_SLOTS = [
+    { key: 'visa',      label: 'Visa' },
+    { key: 'contract',  label: 'Contract' },
+    { key: 'passport',  label: 'Passport' },
+    { key: 'eid_front', label: 'Emirates ID — Front' },
+    { key: 'eid_back',  label: 'Emirates ID — Back' },
+    { key: 'rera',      label: 'RERA' },
+  ];
+
+  async function injectDocumentsCard() {
+    var empName = getDetailEmpName();
+    if (!empName) return;
+
+    var emps = await loadAllEmps();
+    var emp  = emps.find(function (e) { return e.name === empName; });
+    if (!emp) return;
+
+    var existing = document.getElementById('nhe-documents-card');
+    if (existing) {
+      if (existing.dataset.empId === String(emp.id)) return;       // already showing this employee
+      existing.dataset.empId = String(emp.id);                     // switched employee — refresh in place
+      renderDocumentsCard(existing, emp.id, await getFiles(emp.id));
+      return;
+    }
+
+    // Place it right after the Document Expiry card when present, else after the last card
+    var anchor = null;
+    document.querySelectorAll('.card-title').forEach(function (t) {
+      if (!anchor && /Document Expiry/i.test(t.textContent || '')) anchor = t.closest('.card');
+    });
+    if (!anchor) {
+      var cards = document.querySelectorAll('.card');
+      anchor = cards.length ? cards[cards.length - 1] : null;
+    }
+    if (!anchor) return;
+
+    var card = document.createElement('div');
+    card.id = 'nhe-documents-card';
+    card.className = 'card';
+    card.style.marginTop = '16px';
+    card.dataset.empId = String(emp.id);
+    anchor.insertAdjacentElement('afterend', card);
+
+    renderDocumentsCard(card, emp.id, await getFiles(emp.id));
+  }
+
+  function documentSlotHtml(slot, rec) {
+    var has   = !!(rec && rec.data);
+    var isImg = has && /^data:image\//.test(rec.data);
+    var preview = has
+      ? (isImg
+          ? '<img src="' + rec.data + '" alt="" style="max-width:100%;max-height:100%;object-fit:contain">'
+          : '<div style="display:flex;flex-direction:column;align-items:center;gap:4px;color:#64748b;font-size:11px">' +
+              '<span style="font-size:26px">📄</span><span style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+              escapeHtml(rec.name || 'File') + '</span></div>')
+      : '<div style="color:#cbd5e1;font-size:11px;display:flex;flex-direction:column;align-items:center;gap:4px">' +
+          '<span style="font-size:24px">🖼️</span>No file</div>';
+
+    return '<div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;background:#fff;display:flex;flex-direction:column">' +
+        '<div style="font-size:11px;font-weight:700;color:#0f172a;padding:8px 10px;border-bottom:1px solid #f1f5f9">' + slot.label + '</div>' +
+        '<div class="nhe-slot-preview" data-key="' + slot.key + '" ' +
+          'style="height:120px;background:#f8fafc;display:flex;align-items:center;justify-content:center;overflow:hidden' + (has ? ';cursor:pointer' : '') + '">' +
+          preview +
+        '</div>' +
+        '<div style="display:flex;gap:6px;padding:8px 10px;border-top:1px solid #f1f5f9">' +
+          '<button type="button" class="nhe-slot-upload" data-key="' + slot.key + '" ' +
+            'style="flex:1;font-size:11px;padding:5px 8px;border-radius:6px;border:1px solid #3b82f6;background:#eff6ff;color:#1d4ed8;cursor:pointer;font-weight:700">' +
+            (has ? 'Replace' : '⬆️ Upload') + '</button>' +
+          (has
+            ? '<button type="button" class="nhe-slot-open" data-key="' + slot.key + '" title="Open in new tab" style="font-size:11px;padding:5px 8px;border-radius:6px;border:1px solid #e2e8f0;background:#fff;color:#64748b;cursor:pointer">Open</button>'
+            : '') +
+        '</div>' +
+      '</div>';
+  }
+
+  function renderDocumentsCard(card, empId, files) {
+    var grid = DOCUMENT_SLOTS.map(function (s) {
+      return documentSlotHtml(s, files[s.key]);
+    }).join('');
+
+    card.innerHTML =
+      '<div class="card-header" style="display:flex;align-items:center;justify-content:space-between">' +
+        '<span class="card-title">📎 Documents</span>' +
+        '<span style="font-size:11px;color:#94a3b8">Images or PDF</span>' +
+      '</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;padding:16px">' +
+        grid +
+      '</div>';
+
+    // Open (preview or Open button) → open the stored file via a Blob URL
+    card.querySelectorAll('.nhe-slot-open, .nhe-slot-preview').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var rec = files[el.getAttribute('data-key')];
+        if (rec && rec.data) openStoredFile(rec.data);
+      });
+    });
+
+    card.querySelectorAll('.nhe-slot-upload').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var key = btn.getAttribute('data-key');
+        var input = document.createElement('input');
+        input.type = 'file';
+        input.accept = 'image/*,.pdf';
+        input.onchange = async function (e) {
+          var file = e.target.files && e.target.files[0];
+          if (!file) return;
+          var prev = btn.textContent;
+          btn.textContent = '⏳ …'; btn.disabled = true;
+          try {
+            await saveEmployeeDoc(empId, key, file);
+            renderDocumentsCard(card, empId, await getFiles(empId));
+          } catch (err) {
+            alert('Upload failed: ' + ((err && err.message) || err));
+            btn.textContent = prev; btn.disabled = false;
+          }
+        };
+        input.click();
+      });
+    });
+  }
+
+  async function refreshDocumentsCard(empId) {
+    var card = document.getElementById('nhe-documents-card');
+    if (card) renderDocumentsCard(card, empId, await getFiles(empId));
   }
 
   // ════════════════════════════════════════════════════════════════════════════
@@ -543,20 +947,16 @@
   var observer = new MutationObserver(function () {
     clearTimeout(obsTimer);
     obsTimer = setTimeout(function () {
-      injectDocCard();
-      injectLeaveCard();
-      injectNotifBell();
+      enhanceDocExpiryCard();
+      injectDocumentsCard();
     }, 200);
   });
 
   function start() {
-    if (!window.firebase || !window.firebase.apps) { setTimeout(start, 300); return; }
-    var app = window.firebase.apps.find(function (a) { return a.name === '[DEFAULT]'; });
-    if (!app) { setTimeout(start, 300); return; }
+    if (!hrApp()) { setTimeout(start, 300); return; }
     observer.observe(document.body, { childList: true, subtree: true });
-    injectDocCard();
-    injectLeaveCard();
-    injectNotifBell();
+    enhanceDocExpiryCard();
+    injectDocumentsCard();
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
